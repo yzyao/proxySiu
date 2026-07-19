@@ -32,6 +32,8 @@ public sealed class ProxyPoolOptions
     public int MaxSourceBytes { get; set; } = 2_000_000;
     public int MaxConsecutiveFailures { get; set; } = 3;
     public int RemoveDeadAfterHours { get; set; } = 24;
+    public int MaxPoolSize { get; set; } = 6_000;
+    public int RemoveUnseenAfterHours { get; set; } = 12;
     public bool ScanOnStartup { get; set; } = true;
     public bool AllowRemoteAccess { get; set; }
     public bool AllowInternalNetworkAccess { get; set; }
@@ -211,6 +213,9 @@ public sealed class ProxyPoolOptionsValidator : IValidateOptions<ProxyPoolOption
         Require(InRange(options.MaxSourceBytes, 1_024, 20_000_000), "MaxSourceBytes must be between 1024 and 20000000.");
         Require(InRange(options.MaxConsecutiveFailures, 1, 100), "MaxConsecutiveFailures must be between 1 and 100.");
         Require(InRange(options.RemoveDeadAfterHours, 1, 8_760), "RemoveDeadAfterHours must be between 1 and 8760.");
+        Require(InRange(options.MaxPoolSize, 1, 200_000), "MaxPoolSize must be between 1 and 200000.");
+        Require(InRange(options.RemoveUnseenAfterHours, 1, 8_760),
+            "RemoveUnseenAfterHours must be between 1 and 8760.");
         Require(!options.AllowRemoteAccess,
             "AllowRemoteAccess is not supported in the local-stability profile. Keep the service behind loopback access.");
 

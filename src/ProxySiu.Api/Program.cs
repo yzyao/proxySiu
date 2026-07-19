@@ -452,6 +452,12 @@ static IReadOnlyDictionary<string, string?> LoadDotEnvConfiguration(string conte
             case "PROXYSIU_PROFILE":
                 configuration["ProxyPool:Profile"] = value;
                 break;
+            case "PROXYSIU_MAX_POOL_SIZE":
+                configuration["ProxyPool:MaxPoolSize"] = value;
+                break;
+            case "PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS":
+                configuration["ProxyPool:RemoveUnseenAfterHours"] = value;
+                break;
         }
     }
 

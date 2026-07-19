@@ -63,7 +63,11 @@ openssl rand -base64 36
 PROXYSIU_PROFILE=idc-safe
 PROXYSIU_ACCESS_TOKEN=replace-with-a-random-production-token
 PROXYSIU_COOKIE_SECURE=true
+PROXYSIU_MAX_POOL_SIZE=6000
+PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS=12
 ```
+
+`PROXYSIU_MAX_POOL_SIZE` is the hard pool limit. At the limit, Dead records are evicted before Pending, and Alive records are the last choice. `PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` removes unseen Dead/Pending records and quarantines them briefly to prevent immediate re-addition.
 
 `PROXYSIU_ACCESS_TOKEN` 至少应为 24 个字符，并且 `.env` 不会提交到 Git。
 

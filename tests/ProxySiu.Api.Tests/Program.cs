@@ -19,6 +19,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("options validator enforces local-only configuration", OptionsValidatorAsync),
     ("access token issues a protected browser session and read key", AccessTokenAuthAsync),
     ("check planner isolates bootstrap and reserves steady-state quotas", CheckPlannerAsync),
+    ("pool retention caps growth and removes stale unseen records", PoolRetentionAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
     ("json store preserves a recoverable backup", JsonStoreBackupAsync)
 };
@@ -215,6 +216,75 @@ static Task CheckPlannerAsync()
     Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Pending) == 200, "Pending reserve must be honored.");
     Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Dead) == 80, "Dead reserve must be honored.");
     return Task.CompletedTask;
+}
+
+static async Task PoolRetentionAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var options = Options.Create(new ProxyPoolOptions
+        {
+            DataFile = file,
+            MaxPoolSize = 3,
+            RemoveUnseenAfterHours = 12,
+            RemoveDeadAfterHours = 24 * 365,
+            MaxConsecutiveFailures = 3
+        });
+        var environment = new TestHostEnvironment(directory);
+        var store = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
+        var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
+        var pool = new ProxyPoolService(store, new ProxyListParser(options),
+            new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance), new TestHttpClientFactory(),
+            profileManager, NullLogger<ProxyPoolService>.Instance);
+        await store.InitializeAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        var healthy = AliveProxy("1.1.1.1", 1001, now);
+        var mostFailed = DeadProxy("2.2.2.2", 1002, now);
+        mostFailed.ConsecutiveFailures = 8;
+        var olderDead = DeadProxy("3.3.3.3", 1003, now.AddHours(-2));
+        olderDead.ConsecutiveFailures = 1;
+        var pendingOne = NewProxy("4.4.4.4", 1004);
+        var pendingTwo = NewProxy("5.5.5.5", 1005);
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.AddRange([healthy, mostFailed, olderDead, pendingOne, pendingTwo]);
+            return 0;
+        });
+
+        await pool.PruneAsync(CancellationToken.None);
+        var capped = await store.ReadAsync(state => state.Proxies.ToList());
+        Assert(capped.Count == 3, "The retention limit must cap the pool.");
+        Assert(capped.Any(proxy => proxy.Id == healthy.Id), "A live proxy must be retained before dead proxies.");
+        Assert(capped.All(proxy => proxy.Id != mostFailed.Id && proxy.Id != olderDead.Id),
+            "Dead proxies with more failures or older sightings must be evicted first.");
+
+        var stalePending = NewProxy("6.6.6.6", 1006);
+        stalePending.LastSeenAt = now.AddHours(-13);
+        var staleDead = DeadProxy("7.7.7.7", 1007, now.AddHours(-13));
+        staleDead.LastSeenAt = now.AddHours(-13);
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.Clear();
+            state.Proxies.AddRange([healthy, stalePending, staleDead]);
+            return 0;
+        });
+
+        await pool.PruneAsync(CancellationToken.None);
+        var retained = await store.ReadAsync(state => state.Proxies.ToList());
+        Assert(retained.Count == 1 && retained[0].Id == healthy.Id,
+            "Unseen dead and pending records must be pruned before the normal dead-record timeout.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
 }
 
 static async Task JsonStoreBackupAsync()

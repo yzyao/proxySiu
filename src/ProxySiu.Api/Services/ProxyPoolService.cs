@@ -394,10 +394,12 @@ public sealed class ProxyPoolService
                     }
                 }
 
+                var evicted = SelectCapacityEvictions(state.Proxies, Options.MaxPoolSize);
+                RemoveWithQuarantine(state, evicted, now, Options);
                 var failed = results.Count(result => result.Error is not null);
                 return new PoolOperationResult(false,
                     $"采集完成：新增 {added}，刷新 {updated}，失败源 {failed}。",
-                    results.Sum(result => result.Candidates.Count), added, updated, 0, failed);
+                    results.Sum(result => result.Candidates.Count), added, updated, evicted.Count, failed);
             }, cancellationToken);
             _lastScanAt = now;
             return SetMessage(summary);
@@ -520,29 +522,24 @@ public sealed class ProxyPoolService
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var cutoff = now.AddHours(-Math.Clamp(Options.RemoveDeadAfterHours, 1, 24 * 365));
+            var deadCutoff = now.AddHours(-Math.Clamp(Options.RemoveDeadAfterHours, 1, 24 * 365));
+            var unseenCutoff = now.AddHours(-Math.Clamp(Options.RemoveUnseenAfterHours, 1, 24 * 365));
             var removed = await _store.WriteAsync(state =>
             {
                 state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
                 var toRemove = state.Proxies.Where(proxy =>
-                    !proxy.IsPinned && proxy.Status == ProxyStatus.Dead &&
-                    proxy.ConsecutiveFailures >= Math.Max(1, Options.MaxConsecutiveFailures) &&
-                    (proxy.QuarantinedUntil is null || proxy.QuarantinedUntil <= now) &&
-                    (proxy.LastAliveAt ?? proxy.FirstSeenAt) < cutoff).ToList();
-
-                foreach (var proxy in toRemove)
-                {
-                    state.Quarantines.RemoveAll(quarantine => quarantine.Key.Equals(proxy.Key,
-                        StringComparison.OrdinalIgnoreCase));
-                    state.Quarantines.Add(new ProxyQuarantine
-                    {
-                        Key = proxy.Key,
-                        ExpiresAt = now.AddHours(Math.Max(1, Options.ReaddQuarantineHours))
-                    });
-                }
-
+                    !proxy.IsPinned &&
+                    ((proxy.Status == ProxyStatus.Dead &&
+                      proxy.ConsecutiveFailures >= Math.Max(1, Options.MaxConsecutiveFailures) &&
+                      (proxy.QuarantinedUntil is null || proxy.QuarantinedUntil <= now) &&
+                      (proxy.LastAliveAt ?? proxy.FirstSeenAt) < deadCutoff) ||
+                     ((proxy.Status is ProxyStatus.Dead or ProxyStatus.Pending) && proxy.LastSeenAt < unseenCutoff)))
+                    .ToList();
                 var removedIds = toRemove.Select(proxy => proxy.Id).ToHashSet();
-                state.Proxies.RemoveAll(proxy => removedIds.Contains(proxy.Id));
+                var capacityEvictions = SelectCapacityEvictions(
+                    state.Proxies.Where(proxy => !removedIds.Contains(proxy.Id)), Options.MaxPoolSize);
+                toRemove.AddRange(capacityEvictions);
+                RemoveWithQuarantine(state, toRemove, now, Options);
                 return toRemove.Count;
             }, cancellationToken);
             _lastPruneAt = now;
@@ -630,6 +627,50 @@ public sealed class ProxyPoolService
         }
 
         return Encoding.UTF8.GetString(target.ToArray());
+    }
+
+    private static List<ProxyRecord> SelectCapacityEvictions(IEnumerable<ProxyRecord> records, int maxPoolSize)
+    {
+        var items = records.ToList();
+        var excess = Math.Max(0, items.Count - Math.Clamp(maxPoolSize, 1, 200_000));
+        if (excess == 0)
+        {
+            return [];
+        }
+
+        return items.Where(proxy => !proxy.IsPinned)
+            .OrderBy(EvictionPriority)
+            .ThenByDescending(proxy => proxy.ConsecutiveFailures)
+            .ThenBy(proxy => proxy.LastSeenAt)
+            .ThenBy(proxy => proxy.FirstSeenAt)
+            .Take(excess)
+            .ToList();
+    }
+
+    private static int EvictionPriority(ProxyRecord proxy) => proxy.Status switch
+    {
+        ProxyStatus.Dead => 0,
+        ProxyStatus.Pending => 1,
+        _ => 2
+    };
+
+    private static void RemoveWithQuarantine(ProxyPoolState state, IEnumerable<ProxyRecord> records,
+        DateTimeOffset now, ProxyPoolOptions options)
+    {
+        var toRemove = records.DistinctBy(proxy => proxy.Id).ToList();
+        foreach (var proxy in toRemove)
+        {
+            state.Quarantines.RemoveAll(quarantine => quarantine.Key.Equals(proxy.Key,
+                StringComparison.OrdinalIgnoreCase));
+            state.Quarantines.Add(new ProxyQuarantine
+            {
+                Key = proxy.Key,
+                ExpiresAt = now.AddHours(Math.Max(1, options.ReaddQuarantineHours))
+            });
+        }
+
+        var removedIds = toRemove.Select(proxy => proxy.Id).ToHashSet();
+        state.Proxies.RemoveAll(proxy => removedIds.Contains(proxy.Id));
     }
 
     private bool IsDue(ProxyRecord proxy, DateTimeOffset now)

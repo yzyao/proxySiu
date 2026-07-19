@@ -11,6 +11,39 @@ ProxySiu 是一个自托管的公开代理池：采集 HTTP、SOCKS4、SOCKS5 �
 - 其他服务可使用同一 Token 读取可用代理，但不能调用管理、扫描或检测接口。
 - 数据使用 JSON 持久化，并保留 `proxy-pool.json.bak` 备份用于故障恢复。
 
+## IP 维护流程
+
+```mermaid
+flowchart TD
+    Sources[公开代理源] --> Scan[采集任务]
+    Manual[手动添加代理] --> Pool
+    Scan --> Parse[解析、去重与公网地址校验]
+    Parse --> Pool[(代理池与 JSON 备份)]
+
+    Timer[随机定时调度] --> Planner{首次扫描完成？}
+    Pool --> Planner
+    Planner -->|否| PendingOnly[仅选 Pending\n避免首次检测与复测碰撞]
+    Planner -->|是| Quotas[按配额选择\nAlive / Pending / Dead]
+    PendingOnly --> Check[并发代理检测]
+    Quotas --> Check
+
+    Check -->|成功| Alive[Alive\n记录延迟与下次复测]
+    Check -->|失败| Retry[Dead\n首次退避后复测]
+    Retry -->|连续失败| Quarantine[隔离 / 清理]
+    Alive --> Pool
+    Retry --> Pool
+    Quarantine --> Pool
+
+    Web[Web 管理台] --> Session[Token 登录会话]
+    Session --> Actions[维护操作队列]
+    Actions --> Scan
+    Actions --> Planner
+    Service[其他服务 + Bearer Token] --> ReadAPI[随机代理 / 文本导出]
+    Pool --> ReadAPI
+```
+
+首次阶段只消化 Pending；首次扫描完成后，每批为三种状态保留名额，未使用的容量由其他已到期记录补齐。失败代理按档位退避复测，连续失败后隔离，避免无效地址持续占用检测容量。
+
 ## VPS 部署（推荐）
 
 前提：VPS 已安装 Docker Compose 和 Nginx，且 Nginx 负责 HTTPS 证书。

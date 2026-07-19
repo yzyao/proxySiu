@@ -79,8 +79,8 @@ public sealed class MaintenanceOperationQueue
         {
             Start(operation);
             var operationStartedAt = operation.Snapshot.StartedAt;
-            logger.LogInformation("Maintenance operation {OperationId} ({OperationKind}) started at {StartedAt}; force={Force}",
-                operation.Snapshot.Id, operation.Snapshot.Kind, operationStartedAt, operation.Snapshot.Force);
+            logger.LogInformation("[任务开始] ID={OperationId} 类型={OperationKind} 开始时间={StartedAt} 强制检测={Force}",
+                operation.Snapshot.Id, DescribeKind(operation.Snapshot.Kind), FormatTime(operationStartedAt), operation.Snapshot.Force);
             var startedAt = Stopwatch.GetTimestamp();
             try
             {
@@ -94,24 +94,25 @@ public sealed class MaintenanceOperationQueue
                 };
                 var completed = Complete(operation, MaintenanceOperationStatus.Completed, result.Message, result);
                 logger.LogInformation(
-                    "Maintenance operation {OperationId} ({OperationKind}) completed; started={StartedAt}, completed={CompletedAt}, elapsedMs={ElapsedMilliseconds}, processed={Processed}, added={Added}, updated={Updated}, removed={Removed}, failed={Failed}",
-                    completed.Id, completed.Kind, completed.StartedAt, completed.CompletedAt,
-                    Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds), result.Processed, result.Added,
-                    result.Updated, result.Removed, result.Failed);
+                    "[任务完成] ID={OperationId} 类型={OperationKind} 开始={StartedAt} 完成={CompletedAt} 耗时={ElapsedMilliseconds}ms | 处理={Processed} 新增={Added} 更新={Updated} 清理={Removed} 失败={Failed} | {Message}",
+                    completed.Id, DescribeKind(completed.Kind), FormatTime(completed.StartedAt),
+                    FormatTime(completed.CompletedAt), Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds),
+                    result.Processed, result.Added, result.Updated, result.Removed, result.Failed, result.Message);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 var cancelled = Complete(operation, MaintenanceOperationStatus.Cancelled,
                     "Maintenance operation cancelled during shutdown.", null);
-                logger.LogWarning("Maintenance operation {OperationId} ({OperationKind}) cancelled; started={StartedAt}, completed={CompletedAt}",
-                    cancelled.Id, cancelled.Kind, cancelled.StartedAt, cancelled.CompletedAt);
+                logger.LogWarning("[任务取消] ID={OperationId} 类型={OperationKind} 开始={StartedAt} 结束={CompletedAt}",
+                    cancelled.Id, DescribeKind(cancelled.Kind), FormatTime(cancelled.StartedAt),
+                    FormatTime(cancelled.CompletedAt));
             }
             catch (Exception exception)
             {
                 var failed = Complete(operation, MaintenanceOperationStatus.Failed,
                     "Maintenance operation failed. Check server logs.", null);
-                logger.LogError(exception, "Maintenance operation {OperationId} ({OperationKind}) failed; started={StartedAt}, completed={CompletedAt}",
-                    failed.Id, failed.Kind, failed.StartedAt, failed.CompletedAt);
+                logger.LogError(exception, "[任务失败] ID={OperationId} 类型={OperationKind} 开始={StartedAt} 失败时间={CompletedAt} | {Message}",
+                    failed.Id, DescribeKind(failed.Kind), FormatTime(failed.StartedAt), FormatTime(failed.CompletedAt), failed.Message);
             }
         }
     }
@@ -172,6 +173,17 @@ public sealed class MaintenanceOperationQueue
         operation.Completion.TrySetResult(completed);
         return completed;
     }
+
+    private static string DescribeKind(MaintenanceOperationKind kind) => kind switch
+    {
+        MaintenanceOperationKind.Scan => "采集",
+        MaintenanceOperationKind.Check => "检测",
+        MaintenanceOperationKind.Refresh => "采集并检测",
+        MaintenanceOperationKind.Prune => "清理",
+        _ => kind.ToString()
+    };
+
+    private static string FormatTime(DateTimeOffset? value) => value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz") ?? "—";
 
     private sealed class QueuedOperation(MaintenanceOperationDto snapshot)
     {

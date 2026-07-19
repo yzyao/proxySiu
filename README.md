@@ -32,6 +32,59 @@ location / {
 }
 ```
 
+### VPS deployment
+
+On the VPS, install Docker Compose and Nginx, then clone this repository and create the production `.env` from the example:
+
+```bash
+cp .env.example .env
+openssl rand -base64 36
+```
+
+Put the generated value in `.env`; do not reuse the local development token:
+
+```dotenv
+PROXYSIU_PROFILE=idc-safe
+PROXYSIU_ACCESS_TOKEN=replace-with-your-random-production-token
+PROXYSIU_COOKIE_SECURE=true
+```
+
+Start the two containers and inspect their startup logs:
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
+
+Compose binds only the web container to `127.0.0.1:5173` and does not publish the API container. Terminate TLS on the host Nginx and proxy the public domain to that loopback port:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name proxy.example.com;
+
+    ssl_certificate /path/to/fullchain.pem;
+    ssl_certificate_key /path/to/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:5173;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+Validate and reload Nginx with `nginx -t && systemctl reload nginx`. Open `https://proxy.example.com` and submit `PROXYSIU_ACCESS_TOKEN` once. Other services can read proxies without a browser session:
+
+```bash
+curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/random?protocol=http'
+```
+
+That token can only read `/api/proxy/random` and `/api/proxy/plain`; it cannot manage the pool. If it is exposed, rotate it in `.env` and recreate the containers with `docker compose up -d --force-recreate`.
+
 Maintenance actions (`/api/actions/scan`, `/check`, `/refresh`, and `/prune`) now return `202 Accepted` immediately with an operation resource. Poll `/api/operations/{id}` or `/api/dashboard` for queued, running, and completed state. Only one maintenance operation may be queued or running at a time.
 
 Checking profiles can be selected at runtime from the web console when no maintenance operation is running, or selected at startup with an ignored `.env` file: `PROXYSIU_PROFILE=idc-safe`. `high-throughput` is the default: 36 concurrent checks, batches of 400, and a 5-15 minute cadence. `idc-safe` uses 10 concurrent checks, batches of 100, and a 15-30 minute cadence; it also relaxes alive rechecks to 60 minutes. A first sweep exclusively checks pending proxies. After that, each profile reserves slots for due alive, newly pending, and dead proxies; unused capacity is shared. Failed proxies retry with backoff and then enter persisted quarantine, preventing source scans from immediately reintroducing removed records.

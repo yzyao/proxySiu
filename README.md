@@ -111,7 +111,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-只会暴露 Web 容器到 `127.0.0.1:5173`；不要给 `api` 服务增加宿主机 `ports` 映射。API 在 Compose 内网绑定 `0.0.0.0:5080`，供 Web 容器访问；运行数据与 DataProtection 密钥位于 Docker 命名卷 `proxy-data`。
+只会暴露 Web 容器到 `127.0.0.1:5173`；不要给 `api` 服务增加宿主机 `ports` 映射。API 在 Compose 内网绑定 `0.0.0.0:5080`，供 Web 容器访问，并接受由 Web 反代传来的公网 `Host`；运行数据与 DataProtection 密钥位于 Docker 命名卷 `proxy-data`。
 
 ### 3. Nginx 反向代理
 

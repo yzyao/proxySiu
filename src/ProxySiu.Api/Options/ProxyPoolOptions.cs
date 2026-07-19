@@ -34,8 +34,6 @@ public sealed class ProxyPoolOptions
     public int RemoveDeadAfterHours { get; set; } = 24;
     public int MaxPoolSize { get; set; } = 6_000;
     public int RemoveUnseenAfterHours { get; set; } = 12;
-    public int PendingAdmissionCapacity { get; set; } = 1_200;
-    public int DeadRetentionCapacity { get; set; } = 480;
     public bool ScanOnStartup { get; set; } = true;
     public bool AllowRemoteAccess { get; set; }
     public bool AllowInternalNetworkAccess { get; set; }
@@ -57,8 +55,6 @@ public sealed class ProxyPoolProfile
     public int? PendingChecksPerCycle { get; set; }
     public int? DeadChecksPerCycle { get; set; }
     public int? MaxChecksPerCycle { get; set; }
-    public int? PendingAdmissionCapacity { get; set; }
-    public int? DeadRetentionCapacity { get; set; }
 
     public void ApplyTo(ProxyPoolOptions options)
     {
@@ -74,8 +70,6 @@ public sealed class ProxyPoolProfile
         options.PendingChecksPerCycle = PendingChecksPerCycle ?? options.PendingChecksPerCycle;
         options.DeadChecksPerCycle = DeadChecksPerCycle ?? options.DeadChecksPerCycle;
         options.MaxChecksPerCycle = MaxChecksPerCycle ?? options.MaxChecksPerCycle;
-        options.PendingAdmissionCapacity = PendingAdmissionCapacity ?? options.PendingAdmissionCapacity;
-        options.DeadRetentionCapacity = DeadRetentionCapacity ?? options.DeadRetentionCapacity;
     }
 }
 
@@ -222,12 +216,6 @@ public sealed class ProxyPoolOptionsValidator : IValidateOptions<ProxyPoolOption
         Require(InRange(options.MaxPoolSize, 1, 200_000), "MaxPoolSize must be between 1 and 200000.");
         Require(InRange(options.RemoveUnseenAfterHours, 1, 8_760),
             "RemoveUnseenAfterHours must be between 1 and 8760.");
-        Require(InRange(options.PendingAdmissionCapacity, 1, options.MaxPoolSize),
-            "PendingAdmissionCapacity must be between 1 and MaxPoolSize.");
-        Require(InRange(options.DeadRetentionCapacity, 1, options.MaxPoolSize),
-            "DeadRetentionCapacity must be between 1 and MaxPoolSize.");
-        Require(options.PendingAdmissionCapacity + options.DeadRetentionCapacity <= options.MaxPoolSize,
-            "PendingAdmissionCapacity and DeadRetentionCapacity cannot exceed MaxPoolSize together.");
         Require(!options.AllowRemoteAccess,
             "AllowRemoteAccess is not supported in the local-stability profile. Keep the service behind loopback access.");
 

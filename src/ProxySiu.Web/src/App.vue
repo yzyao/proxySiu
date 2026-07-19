@@ -71,11 +71,10 @@ const checkQueue = computed(() => dashboard.value.operations?.checkQueue || {})
 const maintenanceOperation = computed(() => dashboard.value.operations?.activeOperation || null)
 const maintenanceBusy = computed(() => maintenanceOperation.value !== null)
 const checkProgress = computed(() => Math.round(checkQueue.value.progressPercent || 0))
-const displayedCheckProgress = computed(() => checkQueue.value.isRunning || !checkQueue.value.waiting ? checkProgress.value : 0)
+const displayedCheckProgress = computed(() => checkQueue.value.isRunning ? checkProgress.value : 0)
 const checkProgressLabel = computed(() => {
   if (checkQueue.value.isRunning) return `${checkProgress.value}%`
-  if (checkQueue.value.waiting) return '待开始'
-  return checkQueue.value.total ? `${checkProgress.value}%` : '—'
+  return '—'
 })
 const checkQueueTitle = computed(() => {
   if (checkQueue.value.isRunning) {
@@ -83,16 +82,13 @@ const checkQueueTitle = computed(() => {
       ? `正在检测 ${checkQueue.value.completed}/${checkQueue.value.total}`
       : '正在准备检测队列'
   }
-  if (checkQueue.value.waiting) return `${checkQueue.value.waiting} 个代理等待检测`
-  if (checkQueue.value.completed) return `上一批已完成 ${checkQueue.value.completed} 个`
-  return '当前没有待检测代理'
+  return '当前没有检测任务'
 })
 const checkQueueHint = computed(() => {
   if (checkQueue.value.isRunning) {
     return `并发 ${checkQueue.value.concurrency || 0}，正在处理 ${checkQueue.value.inFlight || 0} 个`
   }
-  if (checkQueue.value.waiting) return '到期代理会优先进入下一批检测'
-  return `上次检测 ${formatDate(dashboard.value.operations?.lastCheckAt)}`
+  return '全局代理状态请查看页面顶部'
 })
 
 let pollTimer
@@ -243,9 +239,15 @@ async function runAction(name, label, params = {}) {
 
   actionBusy.value = name
   try {
-    await api.action(name, params)
-    ElMessage.success(`${label} 已加入后台队列`)
+    const operation = await api.action(name, params)
     await loadDashboard()
+    const completed = dashboard.value.operations?.lastOperation
+    if (name === 'check' && !params.force && completed?.id === operation.id &&
+      completed.status === 'completed' && completed.result?.processed === 0) {
+      ElMessage.info('暂无到期代理，无需执行检测')
+    } else {
+      ElMessage.success(`${label} 已加入后台队列`)
+    }
   } catch (error) {
     ElMessage.error(error.message)
   } finally {
@@ -451,7 +453,7 @@ function successRate(row) {
         <div class="pulse" :class="{ busy: dashboard.operations?.isScanning || dashboard.operations?.isChecking }"></div>
         <div>
           <strong>{{ dashboard.operations?.isScanning ? '正在采集' : dashboard.operations?.isChecking ? '正在检测' : '后台守护中' }}</strong>
-          <span v-if="checkQueue.isRunning">已完成 {{ checkQueue.completed }}/{{ checkQueue.total }} · 进行中 {{ checkQueue.inFlight }} · 等待 {{ checkQueue.waiting }}</span>
+          <span v-if="checkQueue.isRunning">本任务：已完成 {{ checkQueue.completed }}/{{ checkQueue.total }} · 进行中 {{ checkQueue.inFlight }} · 等待 {{ checkQueue.waiting }}</span>
           <span v-else>{{ dashboard.operations?.lastMessage || '等待下一次维护周期' }}</span>
         </div>
       </div>
@@ -473,8 +475,8 @@ function successRate(row) {
           <el-button :icon="Refresh" :loading="actionBusy === 'refresh'" @click="runAction('refresh', '刷新')">
             一键刷新
           </el-button>
-          <el-button type="primary" :icon="VideoPlay" :loading="actionBusy === 'check' || checkQueue.isRunning" @click="runAction('check', '检测', { force: false })">
-            {{ checkQueue.isRunning ? `检测中 ${checkProgress}%` : checkQueue.waiting ? `检测队列 (${checkQueue.waiting})` : '检测队列' }}
+          <el-button type="primary" :icon="VideoPlay" :loading="actionBusy === 'check' || checkQueue.isRunning" @click="runAction('check', '检测到期代理', { force: false })">
+            {{ checkQueue.isRunning ? `检测中 ${checkProgress}%` : '检测到期代理' }}
           </el-button>
         </div>
       </header>
@@ -538,9 +540,9 @@ function successRate(row) {
 
           <article class="panel task-panel queue-panel">
             <div class="panel-heading">
-              <div><h2>检测队列</h2><p>实时显示当前批次的处理进度</p></div>
-              <el-tag :type="checkQueue.isRunning ? 'primary' : checkQueue.waiting ? 'warning' : 'success'" effect="light" round>
-                {{ checkQueue.isRunning ? '运行中' : checkQueue.waiting ? '待处理' : '空闲' }}
+              <div><h2>当前检测任务</h2><p>仅显示正在执行的这批检测数据</p></div>
+              <el-tag :type="checkQueue.isRunning ? 'primary' : 'info'" effect="light" round>
+                {{ checkQueue.isRunning ? '运行中' : '空闲' }}
               </el-tag>
             </div>
             <div class="queue-body">
@@ -549,13 +551,16 @@ function successRate(row) {
                 <div><strong>{{ checkQueueTitle }}</strong><small>{{ checkQueueHint }}</small></div>
                 <b>{{ checkProgressLabel }}</b>
               </div>
-              <el-progress :percentage="displayedCheckProgress" :show-text="false" :stroke-width="9" :status="!checkQueue.isRunning && !checkQueue.waiting && checkProgress === 100 ? 'success' : undefined" />
-              <div class="queue-stats">
-                <div><span>等待</span><strong>{{ checkQueue.waiting || 0 }}</strong></div>
-                <div><span>进行中</span><strong>{{ checkQueue.inFlight || 0 }}</strong></div>
-                <div><span>成功</span><strong class="success">{{ checkQueue.alive || 0 }}</strong></div>
-                <div><span>失败</span><strong class="failed">{{ checkQueue.failed || 0 }}</strong></div>
-              </div>
+              <template v-if="checkQueue.isRunning">
+                <el-progress :percentage="displayedCheckProgress" :show-text="false" :stroke-width="9" />
+                <div class="queue-stats">
+                  <div><span>本任务等待</span><strong>{{ checkQueue.waiting }}</strong></div>
+                  <div><span>本任务进行中</span><strong>{{ checkQueue.inFlight }}</strong></div>
+                  <div><span>本任务成功</span><strong class="success">{{ checkQueue.alive }}</strong></div>
+                  <div><span>本任务失败</span><strong class="failed">{{ checkQueue.failed }}</strong></div>
+                </div>
+              </template>
+              <div v-else class="queue-idle">暂无执行中的检测任务；可用、失效和待检测总数请看页面顶部。</div>
               <div class="queue-schedule">
                 <Timer />
                 <div>
@@ -565,7 +570,7 @@ function successRate(row) {
                 <em>{{ checkQueue.isRunning ? `本批共 ${checkQueue.total || 0} 个` : formatDate(dashboard.operations?.nextCheckAt) }}</em>
               </div>
               <div class="queue-time">
-                <span>{{ checkQueue.isRunning ? `开始于 ${formatDate(checkQueue.startedAt)}` : `完成于 ${formatDate(checkQueue.finishedAt)}` }}</span>
+                <span>{{ checkQueue.isRunning ? `开始于 ${formatDate(checkQueue.startedAt)}` : `上次检测 ${formatDate(dashboard.operations?.lastCheckAt)}` }}</span>
                 <span>并发上限 {{ checkQueue.concurrency || '—' }}</span>
               </div>
             </div>

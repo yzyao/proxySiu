@@ -1,63 +1,96 @@
 # ProxySiu
 
-ProxySiu 是一个自托管的公开代理池：采集 HTTP、SOCKS4、SOCKS5 代理，分批检测可用性，并提供 Web 管理台和代理读取 API。
+ProxySiu 是一个自托管的公开代理池维护工具：采集 HTTP、SOCKS4、SOCKS5 候选代理，按节奏检测可用性，并提供独立 Web 管理台和供其他服务读取可用代理的 API。
 
-## 特性
+## 当前设计
 
-- .NET 10 API + Vue/Vite 管理台，Docker Compose 使用两个独立容器。
-- 首轮只检测未检测代理；稳定运行后为 Alive、Pending、Dead 保留检测名额，避免复测挤压首次检测。
-- 可在管理台热切换检测档位；空闲面板 5 秒刷新，任务运行时 2 秒刷新。
-- Token 登录后使用 `HttpOnly`、`Secure`、`SameSite=Strict` 会话 Cookie；Token 不保存在浏览器本地存储。
-- 其他服务可使用同一 Token 读取可用代理，但不能调用管理、扫描或检测接口。
-- 数据使用 JSON 持久化，并保留 `proxy-pool.json.bak` 备份用于故障恢复。
+- 后端：.NET 10 Minimal API、JSON 持久化与后台维护任务。
+- 前端：Vue 3、Vite、Element Plus；开发和生产均与 API 分离。
+- 部署：Docker Compose 启动 `web` 与 `api` 两个容器；仅 Web 映射到宿主机 `127.0.0.1:5173`，API 只在 Compose 内网可见。
+- 认证：浏览器以 Token 登录，换取 `HttpOnly`、`Secure`、`SameSite=Strict` 会话 Cookie；Token 不保存到浏览器。其他服务用同一 Token 调用只读代理 API。
+- 数据：运行数据存储在 `data/proxy-pool.json`，写入时保留 `.bak` 恢复副本；Compose 使用命名卷 `proxy-data`。
+- 归属地：成功检测时通过 `api.ip.sb` 获取出口 IP 与国家/地区/城市；仅可用代理在管理台展示归属地，并可按国家筛选或提取。
 
-## IP 维护流程
+## 代理维护流程
 
 ```mermaid
 flowchart TD
-    Sources[公开代理源] --> Scan[采集任务]
-    Manual[手动添加代理] --> Pool
+    Sources[公开代理源] --> Scan[采集]
+    Manual[手动添加] --> Pool[(代理池 / JSON 备份)]
     Scan --> Parse[解析、去重与公网地址校验]
-    Parse --> Pool[(代理池与 JSON 备份)]
+    Parse --> Capacity{达到 6,000 上限？}
+    Capacity -->|否| Pool
+    Capacity -->|是| Evict[淘汰：多次失败 Dead → 从未成功 Dead → Pending → 恢复中 Dead → Alive]
+    Evict --> Pool
 
-    Timer[随机定时调度] --> Planner{首次扫描完成？}
-    Pool --> Planner
-    Planner -->|否| PendingOnly[仅选 Pending\n避免首次检测与复测碰撞]
-    Planner -->|是| Quotas[按配额选择\nAlive / Pending / Dead]
-    PendingOnly --> Check[并发代理检测]
-    Quotas --> Check
-
-    Check -->|成功| Alive[Alive\n记录延迟与下次复测]
-    Check -->|失败| Retry[Dead\n首次退避后复测]
-    Retry -->|连续失败| Quarantine[隔离 / 清理]
+    Timer[随机定时调度] --> Bootstrap{首轮 Pending 是否完成？}
+    Pool --> Bootstrap
+    Bootstrap -->|否| First[只检测 Pending]
+    Bootstrap -->|是| Batch[按 Alive / Pending / Dead 检测名额选批，再补齐]
+    First --> Check[并发检测]
+    Batch --> Check
+    Check -->|成功| Alive[Alive：记录延迟、出口 IP 与归属地]
+    Check -->|首次失败| Dead1[Dead：按档位等待首次复测]
+    Dead1 -->|再次失败| Dead2[第二次复测退避]
+    Dead2 -->|连续失败达到阈值| Quarantine[24 小时隔离]
     Alive --> Pool
-    Retry --> Pool
+    Dead1 --> Pool
+    Dead2 --> Pool
     Quarantine --> Pool
 
     Web[Web 管理台] --> Session[Token 登录会话]
-    Session --> Actions[维护操作队列]
-    Actions --> Scan
-    Actions --> Planner
-    Service[其他服务 + Bearer Token] --> ReadAPI[随机代理 / 文本导出]
+    Session --> Queue[单任务维护队列]
+    Queue --> Scan
+    Queue --> Check
+    Service[其他服务 + Token] --> ReadAPI[读取可用代理 / 国家字典]
     Pool --> ReadAPI
 ```
 
-首次阶段只消化 Pending；首次扫描完成后，每批为三种状态保留名额，未使用的容量由其他已到期记录补齐。失败代理按档位退避复测，连续失败后隔离，避免无效地址持续占用检测容量。
+## 调度与容量策略
+
+`MaxPoolSize`（默认 `6000`）是所有档位共享的硬上限，不是必须填满的目标。档位只影响请求速率、每批数量和复测节奏。
+
+池满时，新候选仍可进入。优先淘汰顺序如下：
+
+1. 连续失败达到阈值的 Dead；
+2. 从未检测成功过的 Dead；
+3. Pending；
+4. 曾经 Alive、但暂时失败的 Dead；
+5. Alive。
+
+被容量淘汰或清理的候选会进入 24 小时重入隔离，避免同一地址被采集源立刻反复加入。Dead/Pending 默认在连续 12 小时未出现在成功采集结果中后清理；连续失败达到阈值且长期失效的 Dead 也会清理。固定或手动保留的 `Pinned` 记录不参与这些淘汰。
+
+首次扫描尚未完成时，每批只处理 Pending，避免首次检测与复测碰撞。稳定阶段先给 Alive、Pending、Dead 保留本批检测名额，未使用容量依次由 Pending、Dead、Alive 的到期记录补齐。右上角“检测到期代理”只处理已经到期的记录；下方“强制检测一批”会忽略到期时间，但仍遵守本批上限和状态优先级。
+
+| 档位 | 并发 | 每批上限 | 自动检测间隔 | Alive 复测 | Dead 首次 / 第二次复测 | 采集间隔 |
+| --- | ---: | ---: | --- | --- | --- | --- |
+| `high-throughput` | 36 | 400 | 5–15 分钟随机 | 30 分钟 | 1 小时 / 6 小时 | 120 分钟 ±15% |
+| `idc-safe` | 10 | 100 | 15–30 分钟随机 | 60 分钟 | 3 小时 / 12 小时 | 240 分钟 ±15% |
+
+连续失败达到默认阈值 3 次后，记录会进入 24 小时检测隔离；再次成功会清除隔离并恢复为 Alive。管理台可在没有维护任务运行时热切换档位，但这个切换只保存在当前进程内；重启后以 `.env` 的 `PROXYSIU_PROFILE` 为准。
+
+## 任务与日志
+
+系统同一时间只接受一个排队或运行中的维护任务。后台自动任务与手动任务共用该队列。
+
+- 管理台顶部展示全局候选、可用、失效、待检测统计。
+- “当前检测任务”面板只在检测实际运行时显示该任务的等待、进行中、成功、失败和进度；空闲时不把全局到期数量误显示为任务等待数。
+- 控制台默认只保留维护任务的 `Information` 日志；每条任务日志含任务 ID、类型、开始/完成时间、耗时及处理统计。
+
+右上角“检测到期代理”若没有记录到期，会提示“暂无到期代理”，这是正常结果而不是检测失败。
 
 ## VPS 部署（推荐）
 
-前提：VPS 已安装 Docker Compose 和 Nginx，且 Nginx 负责 HTTPS 证书。
+前提：VPS 已安装 Docker Compose 与 Nginx，Nginx 负责公网 HTTPS 证书。
 
-### 1. 配置 Token
-
-在项目根目录创建生产配置：
+### 1. 创建生产配置
 
 ```bash
 cp .env.example .env
 openssl rand -base64 36
 ```
 
-将生成值填入 `.env`，不要使用本地开发 Token：
+将随机值填入 `.env`，不要使用本地开发 Token：
 
 ```dotenv
 PROXYSIU_PROFILE=idc-safe
@@ -65,24 +98,24 @@ PROXYSIU_ACCESS_TOKEN=replace-with-a-random-production-token
 PROXYSIU_COOKIE_SECURE=true
 PROXYSIU_MAX_POOL_SIZE=6000
 PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS=12
+PROXYSIU_GEOIP_USE_IP_SB=true
+PROXYSIU_GEOIP_IP_SB_LOOKUP_INTERVAL_SECONDS=2
 ```
 
-`PROXYSIU_MAX_POOL_SIZE` 是池总量硬上限。达到上限时，优先淘汰失败次数更多、最后出现更早的 Dead，再淘汰 Pending；Alive 最后才会被淘汰。`PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` 会清理长期未出现在成功采集结果中的 Dead/Pending，并将其短期隔离，避免下一次采集立即回流。
+`PROXYSIU_ACCESS_TOKEN` 至少 24 个字符，`.env` 不会提交到 Git。Compose 会将池容量、未见清理和 GeoIP 配置传给 API 容器。
 
-`PROXYSIU_ACCESS_TOKEN` 至少应为 24 个字符，并且 `.env` 不会提交到 Git。
-
-### 2. 启动容器
+### 2. 启动
 
 ```bash
 docker compose up -d --build
 docker compose logs -f
 ```
 
-Compose 只将 Web 容器发布到宿主机 `127.0.0.1:5173`；API 容器没有宿主机端口，不能被外网直接访问。运行数据存放于 Docker 命名卷 `proxy-data`。
+只会暴露 Web 容器到 `127.0.0.1:5173`；不要给 `api` 服务增加宿主机 `ports` 映射。API 运行数据位于 Docker 命名卷 `proxy-data`。
 
-### 3. 配置宿主机 Nginx
+### 3. Nginx 反向代理
 
-将域名反代到本机 Web 容器端口。必须传递 `X-Forwarded-Proto`，否则 HTTPS 下的安全 Cookie 无法正确工作。
+必须把 HTTPS 协议传给 Web 容器，否则安全 Cookie 无法正确工作。
 
 ```nginx
 server {
@@ -106,7 +139,7 @@ server {
 nginx -t && systemctl reload nginx
 ```
 
-现在访问 `https://proxy.example.com`，输入 `.env` 中的 Token 即可进入管理台。
+打开 `https://proxy.example.com`，输入 `.env` 的 Token 登录。
 
 ### 4. 更新与 Token 轮换
 
@@ -115,17 +148,17 @@ git pull
 docker compose up -d --build
 ```
 
-Token 泄露时，修改 `.env` 的 `PROXYSIU_ACCESS_TOKEN` 后执行：
+修改 `.env` 的 Token、档位或池参数后执行：
 
 ```bash
 docker compose up -d --force-recreate
 ```
 
-旧浏览器会话会失效。不要给 `api` 服务添加 `ports` 映射。
+旧浏览器会话会失效。
 
 ## 本地开发
 
-根目录同样需要 `.env`；后端会从 `src/ProxySiu.Api` 向上查找该文件。
+根目录需要 `.env`；后端会从 `src/ProxySiu.Api` 向上查找该文件。
 
 ```powershell
 Copy-Item .env.example .env
@@ -139,87 +172,53 @@ npm install
 npm run dev
 ```
 
-打开 `http://localhost:5173`，使用 `.env` 中的 Token 登录。本地 HTTP 开发应保持 `PROXYSIU_COOKIE_SECURE=false`；Compose 会强制使用 HTTPS 安全 Cookie。
-
-API 仅运行在 `http://127.0.0.1:5080`。前端开发服务器将 `/api` 转发到该端口；`dotnet run` 不提供 Web 页面。
-
-## 检测策略
-
-| 档位 | 并发 | 每批上限 | 自动检测间隔 | Alive 复测 | Dead 复测 |
-| --- | ---: | ---: | --- | --- | --- |
-| `high-throughput` | 36 | 400 | 5–15 分钟随机 | 30 分钟 | 1 小时后首次、6 小时后再次 |
-| `idc-safe` | 10 | 100 | 15–30 分钟随机 | 60 分钟 | 3 小时后首次、12 小时后再次 |
-
-容量分区也随档位变化：`high-throughput` 保留 1,200 个 Pending 新 IP 准入位与 480 个 Dead 复测位；`idc-safe` 保留 400 个 Pending 准入位与 80 个 Dead 复测位。总池 6,000 是硬上限而非必须填满。
-
-首次扫描尚未结束时，每批只处理 Pending，避免首次检测和复测碰撞。之后每批为各状态保留名额，未使用的名额再由其他到期记录补齐。连续失败的代理会退避并进入持久化隔离，采集源不会立即把它重新加入。
-
-新 IP 只使用 Pending 准入位，Pending 满时会等下一批检测释放位置，不会直接淘汰复测位内的 Dead。曾经 Alive 后首次失败的代理会优先保留作恢复复测；连续失败达到阈值后才降入淘汰组。这样新 IP 会持续进入，Dead 也有明确的恢复机会。
-
-默认最多保留 6,000 条记录。源文件内容变化带来的新 IP 会参与容量淘汰，而不是让池无限增长；长期没有在成功采集中再次出现的 Dead/Pending 默认 12 小时后清理。修改 `.env` 后重启服务，首次采集或下一次“清理”任务会执行容量收敛。
-
-启动档位由 `.env` 的 `PROXYSIU_PROFILE` 决定；管理台可在没有维护任务运行时热切换。
+打开 `http://localhost:5173` 并用 `.env` 的 Token 登录。本地 HTTP 开发需保持 `PROXYSIU_COOKIE_SECURE=false`。API 仅监听 `http://127.0.0.1:5080`，Vite 会把 `/api` 转发到该地址；`dotnet run` 不提供 Web 页面。
 
 ## API 与权限
 
-浏览器管理接口需要登录会话。Token 只能用于以下只读代理接口：
+浏览器管理接口需要登录会话。Token 可用于以下只读代理接口，支持 `Authorization: Bearer` 或 `X-API-Key`：
 
 ```bash
-curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
-  'https://proxy.example.com/api/proxy/random?protocol=http'
-
-curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
-  'https://proxy.example.com/api/proxy/plain?protocol=socks5'
-```
-
-按国家提取前，先读取当前可用国家字典；国家参数使用两位 ISO 代码，例如 `US`、`CN`：
-
-```bash
-curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
-  'https://proxy.example.com/api/proxy/countries'
-
 curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
   'https://proxy.example.com/api/proxy/random?protocol=http&country=US'
 
-curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
-  'https://proxy.example.com/api/proxy/plain?country=CN'
+curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/plain?protocol=socks5&country=CN'
 ```
 
 | 方法 | 路径 | 权限 | 用途 |
 | --- | --- | --- | --- |
 | GET | `/api/proxy/countries?protocol=http` | Token 或浏览器会话 | 当前可用代理的国家字典与数量 |
-| GET | `/api/proxy/random?protocol=http&country=US` | Token 或浏览器会话 | 按国家随机返回一个可用代理 |
-| GET | `/api/proxy/plain?protocol=socks5&country=CN` | Token 或浏览器会话 | 按国家文本导出可用代理 |
-| GET | `/api/dashboard` | 浏览器会话 | 池统计与任务状态 |
-| GET / POST / PUT / DELETE | `/api/proxies` | 浏览器会话 | 查询和管理代理 |
+| GET | `/api/proxy/random?protocol=http&country=US` | Token 或浏览器会话 | 返回一个匹配国家的可用代理 |
+| GET | `/api/proxy/plain?protocol=socks5&country=CN` | Token 或浏览器会话 | 文本导出匹配条件的可用代理 |
+| GET | `/api/dashboard` | 浏览器会话 | 池、调度与当前任务状态 |
+| GET / POST / PUT / DELETE | `/api/proxies` | 浏览器会话 | 查询和管理候选代理 |
 | GET / POST / PUT / DELETE | `/api/sources` | 浏览器会话 | 管理采集源 |
 | POST | `/api/actions/scan`、`/check`、`/refresh`、`/prune` | 浏览器会话 | 发起维护任务 |
-| GET | `/api/operations/{id}` | 浏览器会话 | 查询维护任务进度 |
+| GET | `/api/operations/{id}` | 浏览器会话 | 查询当前或最近完成的任务 |
 
-维护请求会立即返回 `202 Accepted`。同一时间最多存在一个排队或运行中的维护任务。
+`POST /api/actions/check?force=false` 只检测到期记录；`force=true` 忽略到期时间。维护请求返回 `202 Accepted`，如已有维护任务则返回 `409 Conflict`。
 
-管理列表也支持 `GET /api/proxies?country=US`；网页“代理池”中的国家下拉使用同一筛选条件。
+管理列表支持 `GET /api/proxies?country=US`；国家筛选仅针对具有 GeoIP 结果的可用代理。
 
 ## IP 归属地
 
-归属地依据代理检测成功后得到的出口 IP 查询，显示国家、地区和城市；它不是精确街道地址。默认检测地址为 `https://api.ip.sb/geoip`：请求经待测代理发出，一次检测即可获得出口 IP 和归属地。`https://api.ip.sb/geoip?callback=getgeoip` 的 JSONP 响应也可解析，但服务端不需要使用 callback。
+默认检测地址为 `https://api.ip.sb/geoip`，请求通过待测代理发出，因此一次成功检测即可获得出口 IP 和归属地。支持解析 `?callback=getgeoip` 的 JSONP 响应，但服务端不需要使用该参数。
 
-若使用自定义检测地址且没有归属地字段，后台会将出口 IP 去重后按默认每 2 秒一次的频率调用 `api.ip.sb/geoip/{IP}` 补全信息，避免额外请求影响检测速度或造成突发流量。
-
-不需要下载、挂载或更新 MMDB 文件。已有记录会在下次成功检测时补全归属地；如设置自定义检测地址，后台会使用 `api.ip.sb` 的限速补全队列。
+如果自定义检测地址没有返回归属地，后台会对成功得到的出口 IP 去重，并以默认每 2 秒一次的频率调用 `https://api.ip.sb/geoip/{IP}` 补全。无需下载或维护 MMDB；归属地是国家/地区/城市级信息，不是物理街道地址。
 
 ## 验证
 
 ```powershell
-dotnet build .\ProxySiu.slnx
 dotnet run --project .\tests\ProxySiu.Api.Tests\ProxySiu.Api.Tests.csproj
+
 cd .\src\ProxySiu.Web
 npm run build
 ```
 
 ## 安全边界
 
-- 公共代理不可信，可能记录、篡改或重放流量；不要用它们传输账号、Cookie、Token 或其他敏感数据。
-- 默认拒绝私网、环回、链路本地和保留地址，降低代理源被用于访问内网的风险。
-- 生产环境只暴露宿主机 Nginx 的 HTTPS 端口；保持 Compose 的 API 无主机端口映射。
+- 公开代理不可信，可能记录、篡改或重放流量；不要经由它们传输账号、Cookie、Token 或其他敏感数据。
+- 默认拒绝私网、环回、链路本地和保留地址，避免代理源或待测地址被用于访问内网。
+- 生产环境只暴露宿主机 Nginx 的 HTTPS 端口，保持 Compose API 无宿主机端口映射。
 - 生产 Token 应独立、随机、可轮换；不要使用仓库示例或本地开发 Token。

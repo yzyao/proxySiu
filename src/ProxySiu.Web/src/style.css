@@ -109,6 +109,7 @@ button, input { font: inherit; }
 .queue-stats span { color: #929dad; font-size: 9px; }
 .queue-stats strong { margin-top: 4px; color: #38465d; font-size: 14px; }
 .queue-stats strong.success { color: #1da96f; }.queue-stats strong.failed { color: #df6269; }
+.queue-idle { margin-top: 16px; padding: 18px 12px; border: 1px dashed #dce3ee; border-radius: 9px; color: #929dad; font-size: 11px; line-height: 1.6; text-align: center; }
 .queue-schedule { margin-top: 13px; padding: 11px 12px; border: 1px solid #e7edfa; border-radius: 10px; background: #f6f9ff; display: grid; grid-template-columns: 28px 1fr auto; gap: 10px; align-items: center; }
 .queue-schedule > svg { width: 17px; color: #3976f6; }
 .queue-schedule span, .queue-schedule strong { display: block; }

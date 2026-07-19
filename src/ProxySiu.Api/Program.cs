@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.HttpOverrides;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Extensions.Options;
 using ProxySiu.Api.Contracts;
 using ProxySiu.Api.Models;
@@ -32,7 +33,9 @@ builder.Services.AddOptions<ProxyAuthOptions>()
     .ValidateOnStart();
 builder.Services.AddOptions<GeoIpOptions>()
     .Bind(builder.Configuration.GetSection(GeoIpOptions.SectionName));
-builder.Services.AddDataProtection();
+builder.Services.AddDataProtection()
+    .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(builder.Environment.ContentRootPath, "data", "data-protection-keys")))
+    .SetApplicationName("ProxySiu");
 builder.Services.AddSingleton<ProxySessionService>();
 builder.Services.AddSingleton<GeoIpService>();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>

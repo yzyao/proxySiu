@@ -47,7 +47,7 @@ docker compose up -d --build
 
 ## 配置与安全
 
-- 根目录 `.env` 用于本地开发。Compose 不会挂载它，而是将 `PROXYSIU_PROFILE`、`PROXYSIU_ACCESS_TOKEN`、`PROXYSIU_MAX_POOL_SIZE`、`PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` 和 GeoIP 变量注入 API 容器。
+- 根目录 `.env` 用于本地开发。Compose 不会挂载它，而是将 `PROXYSIU_PROFILE`、`PROXYSIU_ACCESS_TOKEN`、`PROXYSIU_MAX_POOL_SIZE`、`PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` 和 GeoIP 变量注入 API 容器；容器通过 `Urls=http://0.0.0.0:5080` 在内部网络监听。
 - 默认仅监听 `127.0.0.1:5080`。Compose 通过内部网络访问 API，并显式启用内部访问；不要给 `api` 添加宿主机端口映射。
 - 浏览器管理接口使用 Token 换取 `HttpOnly` Cookie 会话。`/api/proxy/random`、`/plain`、`/countries` 可使用同一 Token 的 Bearer 或 `X-API-Key` 认证；Token 不得进入前端代码或 `localStorage`。
 - 保持 `AllowPrivateNetworks=false`，避免代理检查或采集源被用来访问内网。

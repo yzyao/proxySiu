@@ -8,7 +8,7 @@ ProxySiu 是一个自托管的公开代理池维护工具：采集 HTTP、SOCKS4
 - 前端：Vue 3、Vite、Element Plus；开发和生产均与 API 分离。
 - 部署：Docker Compose 启动 `web` 与 `api` 两个容器；仅 Web 映射到宿主机 `127.0.0.1:5173`，API 只在 Compose 内网可见。
 - 认证：浏览器以 Token 登录，换取 `HttpOnly`、`Secure`、`SameSite=Strict` 会话 Cookie；Token 不保存到浏览器。其他服务用同一 Token 调用只读代理 API。
-- 数据：运行数据存储在 `data/proxy-pool.json`，写入时保留 `.bak` 恢复副本；Compose 使用命名卷 `proxy-data`。
+- 数据：运行数据存储在 `data/proxy-pool.json`，写入时保留 `.bak` 恢复副本；浏览器会话加密密钥也存于 `data/data-protection-keys`。Compose 使用命名卷 `proxy-data` 持久化二者。
 - 归属地：成功检测时通过 `api.ip.sb` 获取出口 IP 与国家/地区/城市；仅可用代理在管理台展示归属地，并可按国家筛选或提取。
 
 ## 代理维护流程
@@ -111,7 +111,7 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-只会暴露 Web 容器到 `127.0.0.1:5173`；不要给 `api` 服务增加宿主机 `ports` 映射。API 运行数据位于 Docker 命名卷 `proxy-data`。
+只会暴露 Web 容器到 `127.0.0.1:5173`；不要给 `api` 服务增加宿主机 `ports` 映射。API 在 Compose 内网绑定 `0.0.0.0:5080`，供 Web 容器访问；运行数据与 DataProtection 密钥位于 Docker 命名卷 `proxy-data`。
 
 ### 3. Nginx 反向代理
 

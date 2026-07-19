@@ -12,7 +12,7 @@ WORKDIR /app
 
 COPY --from=build /app/publish ./
 
-ENV ASPNETCORE_URLS=http://0.0.0.0:5080
+ENV Urls=http://0.0.0.0:5080
 EXPOSE 5080
 
 ENTRYPOINT ["dotnet", "ProxySiu.Api.dll"]

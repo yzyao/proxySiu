@@ -7,6 +7,8 @@ The historical remote-management guidance later in this document is not enabled 
 
 Maintenance actions (`/api/actions/scan`, `/check`, `/refresh`, and `/prune`) now return `202 Accepted` immediately with an operation resource. Poll `/api/operations/{id}` or `/api/dashboard` for queued, running, and completed state. Only one maintenance operation may be queued or running at a time.
 
+Checking uses a 5-15 minute random cadence. A first sweep exclusively checks pending proxies. After that, each 400-proxy cycle reserves up to 120 slots for due alive proxies, 200 for newly pending proxies, and 80 for dead proxies; unused capacity is shared. Failed proxies retry after 1 hour and then 6 hours. After the third consecutive failure they are quarantined for 24 hours, and a removed proxy remains in a persisted 24-hour re-add cooldown so source scans cannot immediately reintroduce it.
+
 The JSON store maintains a `proxy-pool.json.bak` last-known-good copy. If the primary file cannot be read on startup, the service restores the backup and retains a timestamped copy of the corrupt file for diagnosis.
 
 Validation commands:

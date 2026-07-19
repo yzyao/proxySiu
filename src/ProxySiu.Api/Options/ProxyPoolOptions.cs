@@ -11,13 +11,19 @@ public sealed class ProxyPoolOptions
     public string CheckUrl { get; set; } = "https://api.ipify.org?format=json";
     public int RequestTimeoutSeconds { get; set; } = 8;
     public int DownloadTimeoutSeconds { get; set; } = 20;
-    public int CheckConcurrency { get; set; } = 10;
+    public int CheckConcurrency { get; set; } = 36;
     public int SourceConcurrency { get; set; } = 2;
     public int ScanIntervalMinutes { get; set; } = 120;
     public int CheckIntervalMinutes { get; set; } = 10;
     public int RecheckAliveMinutes { get; set; } = 30;
-    public int RecheckDeadMinutes { get; set; } = 180;
-    public int MaxChecksPerCycle { get; set; } = 200;
+    public int RecheckDeadMinutes { get; set; } = 60;
+    public int SecondDeadRetryMinutes { get; set; } = 360;
+    public int DeadQuarantineHours { get; set; } = 24;
+    public int ReaddQuarantineHours { get; set; } = 24;
+    public int AliveChecksPerCycle { get; set; } = 120;
+    public int PendingChecksPerCycle { get; set; } = 200;
+    public int DeadChecksPerCycle { get; set; } = 80;
+    public int MaxChecksPerCycle { get; set; } = 400;
     public int MaxCandidatesPerSource { get; set; } = 800;
     public int MaxSourceBytes { get; set; } = 2_000_000;
     public int MaxConsecutiveFailures { get; set; } = 3;
@@ -44,7 +50,16 @@ public sealed class ProxyPoolOptionsValidator : IValidateOptions<ProxyPoolOption
         Require(InRange(options.CheckIntervalMinutes, 1, 10_080), "CheckIntervalMinutes must be between 1 and 10080.");
         Require(InRange(options.RecheckAliveMinutes, 1, 43_200), "RecheckAliveMinutes must be between 1 and 43200.");
         Require(InRange(options.RecheckDeadMinutes, 1, 43_200), "RecheckDeadMinutes must be between 1 and 43200.");
+        Require(InRange(options.SecondDeadRetryMinutes, 1, 43_200), "SecondDeadRetryMinutes must be between 1 and 43200.");
+        Require(InRange(options.DeadQuarantineHours, 1, 8_760), "DeadQuarantineHours must be between 1 and 8760.");
+        Require(InRange(options.ReaddQuarantineHours, 1, 8_760), "ReaddQuarantineHours must be between 1 and 8760.");
+        Require(InRange(options.AliveChecksPerCycle, 0, 20_000), "AliveChecksPerCycle must be between 0 and 20000.");
+        Require(InRange(options.PendingChecksPerCycle, 0, 20_000), "PendingChecksPerCycle must be between 0 and 20000.");
+        Require(InRange(options.DeadChecksPerCycle, 0, 20_000), "DeadChecksPerCycle must be between 0 and 20000.");
         Require(InRange(options.MaxChecksPerCycle, 1, 20_000), "MaxChecksPerCycle must be between 1 and 20000.");
+        Require(options.AliveChecksPerCycle + options.PendingChecksPerCycle + options.DeadChecksPerCycle <=
+                options.MaxChecksPerCycle,
+            "The per-cycle queue quotas cannot exceed MaxChecksPerCycle.");
         Require(InRange(options.MaxCandidatesPerSource, 1, 50_000), "MaxCandidatesPerSource must be between 1 and 50000.");
         Require(InRange(options.MaxSourceBytes, 1_024, 20_000_000), "MaxSourceBytes must be between 1024 and 20000000.");
         Require(InRange(options.MaxConsecutiveFailures, 1, 100), "MaxConsecutiveFailures must be between 1 and 100.");

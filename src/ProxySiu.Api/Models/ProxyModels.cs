@@ -18,10 +18,12 @@ public enum ProxyStatus
 
 public sealed class ProxyPoolState
 {
-    public int Version { get; set; } = 1;
+    public int Version { get; set; } = 2;
     public DateTimeOffset UpdatedAt { get; set; } = DateTimeOffset.UtcNow;
+    public bool InitialSweepCompleted { get; set; }
     public List<ProxyRecord> Proxies { get; set; } = [];
     public List<ProxySource> Sources { get; set; } = [];
+    public List<ProxyQuarantine> Quarantines { get; set; } = [];
 }
 
 public sealed class ProxyRecord
@@ -42,10 +44,17 @@ public sealed class ProxyRecord
     public int SuccessCount { get; set; }
     public int FailureCount { get; set; }
     public int ConsecutiveFailures { get; set; }
+    public DateTimeOffset? QuarantinedUntil { get; set; }
     public string? LastError { get; set; }
 
     [JsonIgnore]
     public string Key => $"{Protocol}:{Host.ToLowerInvariant()}:{Port}";
+}
+
+public sealed class ProxyQuarantine
+{
+    public required string Key { get; set; }
+    public DateTimeOffset ExpiresAt { get; set; }
 }
 
 public sealed class ProxySource

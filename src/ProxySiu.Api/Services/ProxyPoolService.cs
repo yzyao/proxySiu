@@ -338,6 +338,9 @@ public sealed class ProxyPoolService
             var summary = await _store.WriteAsync(state =>
             {
                 var existing = state.Proxies.ToDictionary(proxy => proxy.Key, StringComparer.OrdinalIgnoreCase);
+                state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
+                var quarantined = state.Quarantines.ToDictionary(quarantine => quarantine.Key,
+                    StringComparer.OrdinalIgnoreCase);
                 var added = 0;
                 var updated = 0;
                 foreach (var result in results)
@@ -359,6 +362,11 @@ public sealed class ProxyPoolService
                     foreach (var candidate in result.Candidates)
                     {
                         var key = $"{candidate.Protocol}:{candidate.Host.ToLowerInvariant()}:{candidate.Port}";
+                        if (quarantined.ContainsKey(key))
+                        {
+                            continue;
+                        }
+
                         if (existing.TryGetValue(key, out var proxy))
                         {
                             proxy.LastSeenAt = now;
@@ -410,13 +418,24 @@ public sealed class ProxyPoolService
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var proxies = await _store.ReadAsync(state => state.Proxies
-                .Where(proxy => force || IsDue(proxy, now))
-                .OrderBy(proxy => proxy.Status == ProxyStatus.Pending ? 0 : proxy.Status == ProxyStatus.Dead ? 1 : 2)
-                .ThenBy(proxy => proxy.LastCheckedAt)
-                .Take(Math.Clamp(_options.MaxChecksPerCycle, 1, 20_000))
-                .Select(CloneProxy)
-                .ToList(), cancellationToken);
+            var initialSweepCompleted = await _store.ReadAsync(state => state.InitialSweepCompleted,
+                cancellationToken);
+            if (!initialSweepCompleted)
+            {
+                var hasPending = await _store.ReadAsync(state => state.Proxies.Any(proxy =>
+                    proxy.Status == ProxyStatus.Pending), cancellationToken);
+                if (!hasPending)
+                {
+                    await _store.WriteAsync(state =>
+                    {
+                        state.InitialSweepCompleted = true;
+                        return 0;
+                    }, cancellationToken);
+                }
+            }
+
+            var proxies = await _store.ReadAsync(state => SelectProxiesForCheck(state, force, now),
+                cancellationToken);
             Interlocked.Exchange(ref _checkTotal, proxies.Count);
             if (proxies.Count == 0)
             {
@@ -465,6 +484,11 @@ public sealed class ProxyPoolService
                     }
                 }
 
+                if (!state.InitialSweepCompleted && state.Proxies.All(proxy => proxy.Status != ProxyStatus.Pending))
+                {
+                    state.InitialSweepCompleted = true;
+                }
+
                 var alive = results.Count(result => result.IsAlive);
                 return new PoolOperationResult(false,
                     $"检测完成：处理 {results.Count}，可用 {alive}，失败 {results.Count - alive}。",
@@ -496,10 +520,30 @@ public sealed class ProxyPoolService
         {
             var now = DateTimeOffset.UtcNow;
             var cutoff = now.AddHours(-Math.Clamp(_options.RemoveDeadAfterHours, 1, 24 * 365));
-            var removed = await _store.WriteAsync(state => state.Proxies.RemoveAll(proxy =>
-                !proxy.IsPinned && proxy.Status == ProxyStatus.Dead &&
-                proxy.ConsecutiveFailures >= Math.Max(1, _options.MaxConsecutiveFailures) &&
-                (proxy.LastAliveAt ?? proxy.FirstSeenAt) < cutoff), cancellationToken);
+            var removed = await _store.WriteAsync(state =>
+            {
+                state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
+                var toRemove = state.Proxies.Where(proxy =>
+                    !proxy.IsPinned && proxy.Status == ProxyStatus.Dead &&
+                    proxy.ConsecutiveFailures >= Math.Max(1, _options.MaxConsecutiveFailures) &&
+                    (proxy.QuarantinedUntil is null || proxy.QuarantinedUntil <= now) &&
+                    (proxy.LastAliveAt ?? proxy.FirstSeenAt) < cutoff).ToList();
+
+                foreach (var proxy in toRemove)
+                {
+                    state.Quarantines.RemoveAll(quarantine => quarantine.Key.Equals(proxy.Key,
+                        StringComparison.OrdinalIgnoreCase));
+                    state.Quarantines.Add(new ProxyQuarantine
+                    {
+                        Key = proxy.Key,
+                        ExpiresAt = now.AddHours(Math.Max(1, _options.ReaddQuarantineHours))
+                    });
+                }
+
+                var removedIds = toRemove.Select(proxy => proxy.Id).ToHashSet();
+                state.Proxies.RemoveAll(proxy => removedIds.Contains(proxy.Id));
+                return toRemove.Count;
+            }, cancellationToken);
             _lastPruneAt = now;
             return SetMessage(new PoolOperationResult(false, $"清理完成：移除 {removed} 个长期失效代理。",
                 Removed: removed));
@@ -594,10 +638,57 @@ public sealed class ProxyPoolService
             return true;
         }
 
-        var minutes = proxy.Status == ProxyStatus.Alive
-            ? Math.Max(1, _options.RecheckAliveMinutes)
-            : Math.Max(1, _options.RecheckDeadMinutes);
-        return proxy.LastCheckedAt <= now.AddMinutes(-minutes);
+        var nextCheckAt = GetNextCheckAt(proxy);
+        return nextCheckAt is null || nextCheckAt <= now;
+    }
+
+    private IReadOnlyList<ProxyRecord> SelectProxiesForCheck(ProxyPoolState state, bool force,
+        DateTimeOffset now)
+    {
+        var capacity = Math.Clamp(_options.MaxChecksPerCycle, 1, 20_000);
+        var initialPending = !state.InitialSweepCompleted && state.Proxies.Any(proxy =>
+            proxy.Status == ProxyStatus.Pending);
+        if (initialPending)
+        {
+            return state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Pending)
+                .OrderBy(proxy => proxy.FirstSeenAt)
+                .Take(capacity)
+                .Select(CloneProxy)
+                .ToList();
+        }
+
+        var eligible = state.Proxies.Where(proxy => force || IsDue(proxy, now));
+        var alive = eligible.Where(proxy => proxy.Status == ProxyStatus.Alive)
+            .OrderBy(proxy => proxy.LastCheckedAt).ToList();
+        var pending = eligible.Where(proxy => proxy.Status == ProxyStatus.Pending)
+            .OrderBy(proxy => proxy.FirstSeenAt).ToList();
+        var dead = eligible.Where(proxy => proxy.Status == ProxyStatus.Dead)
+            .OrderBy(proxy => GetNextCheckAt(proxy)).ToList();
+
+        var selected = new List<ProxyRecord>(capacity);
+        Add(alive, _options.AliveChecksPerCycle);
+        Add(pending, _options.PendingChecksPerCycle);
+        Add(dead, _options.DeadChecksPerCycle);
+        Add(pending, capacity);
+        Add(dead, capacity);
+        Add(alive, capacity);
+        return selected.Select(CloneProxy).ToList();
+
+        void Add(IEnumerable<ProxyRecord> candidates, int limit)
+        {
+            foreach (var candidate in candidates)
+            {
+                if (selected.Count >= capacity || selected.Count(item => item.Status == candidate.Status) >= limit)
+                {
+                    break;
+                }
+
+                if (!selected.Any(item => item.Id == candidate.Id))
+                {
+                    selected.Add(candidate);
+                }
+            }
+        }
     }
 
     private OperationStateDto GetOperationState(int dueChecks)
@@ -688,7 +779,7 @@ public sealed class ProxyPoolService
         return total == 0 ? -1 : proxy.SuccessCount / (double)total;
     }
 
-    private static void ApplyCheckResult(ProxyRecord proxy, ProxyCheckResult result)
+    private void ApplyCheckResult(ProxyRecord proxy, ProxyCheckResult result)
     {
         proxy.LastCheckedAt = result.CheckedAt;
         proxy.LatencyMs = result.LatencyMs;
@@ -700,12 +791,16 @@ public sealed class ProxyPoolService
             proxy.LastAliveAt = result.CheckedAt;
             proxy.SuccessCount++;
             proxy.ConsecutiveFailures = 0;
+            proxy.QuarantinedUntil = null;
         }
         else
         {
             proxy.Status = ProxyStatus.Dead;
             proxy.FailureCount++;
             proxy.ConsecutiveFailures++;
+            proxy.QuarantinedUntil = proxy.ConsecutiveFailures >= Math.Max(1, _options.MaxConsecutiveFailures)
+                ? result.CheckedAt.AddHours(Math.Max(1, _options.DeadQuarantineHours))
+                : null;
         }
     }
 
@@ -727,6 +822,7 @@ public sealed class ProxyPoolService
         SuccessCount = proxy.SuccessCount,
         FailureCount = proxy.FailureCount,
         ConsecutiveFailures = proxy.ConsecutiveFailures,
+        QuarantinedUntil = proxy.QuarantinedUntil,
         LastError = proxy.LastError
     };
 
@@ -771,9 +867,22 @@ public sealed class ProxyPoolService
             return null;
         }
 
-        var minutes = proxy.Status == ProxyStatus.Alive
-            ? Math.Max(1, _options.RecheckAliveMinutes)
-            : Math.Max(1, _options.RecheckDeadMinutes);
+        if (proxy.Status == ProxyStatus.Alive)
+        {
+            return proxy.LastCheckedAt.Value.AddMinutes(Math.Max(1, _options.RecheckAliveMinutes));
+        }
+
+        if (proxy.QuarantinedUntil is { } quarantinedUntil)
+        {
+            return quarantinedUntil;
+        }
+
+        var minutes = proxy.ConsecutiveFailures switch
+        {
+            <= 1 => Math.Max(1, _options.RecheckDeadMinutes),
+            2 => Math.Max(1, _options.SecondDeadRetryMinutes),
+            _ => Math.Max(1, _options.DeadQuarantineHours) * 60
+        };
         return proxy.LastCheckedAt.Value.AddMinutes(minutes);
     }
 

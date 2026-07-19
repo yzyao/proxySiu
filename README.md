@@ -186,15 +186,7 @@ curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
 
 若使用自定义检测地址且没有归属地字段，后台会将出口 IP 去重后按默认每 2 秒一次的频率调用 `api.ip.sb/geoip/{IP}` 补全信息，避免额外请求影响检测速度或造成突发流量。
 
-### 手动放置
-
-1. 注册并下载 [GeoLite2 City](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) 的 `GeoLite2-City.mmdb`。
-2. VPS 部署时，将文件放入项目根目录的 `geoip/GeoLite2-City.mmdb`。
-3. 重建并启动容器：`docker compose up -d --build`。
-
-`geoip/` 是可选的只读本地数据库目录。缺少 MMDB 文件时，归属地仍会通过 `api.ip.sb` 获取；已有记录会在下次成功检测时补全归属地。
-
-本地开发默认从 `src/ProxySiu.Api/data/GeoLite2-City.mmdb` 读取；也可在 `.env` 设置 `PROXYSIU_GEOIP_DATABASE_PATH` 指向任意本地 `.mmdb` 文件。
+不需要下载、挂载或更新 MMDB 文件。已有记录会在下次成功检测时补全归属地；如设置自定义检测地址，后台会使用 `api.ip.sb` 的限速补全队列。
 
 ## 验证
 

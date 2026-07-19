@@ -467,9 +467,6 @@ static IReadOnlyDictionary<string, string?> LoadDotEnvConfiguration(string conte
             case "PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS":
                 configuration["ProxyPool:RemoveUnseenAfterHours"] = value;
                 break;
-            case "PROXYSIU_GEOIP_DATABASE_PATH":
-                configuration["GeoIp:DatabasePath"] = value;
-                break;
             case "PROXYSIU_GEOIP_USE_IP_SB":
                 configuration["GeoIp:UseIpSb"] = value;
                 break;

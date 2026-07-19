@@ -9,12 +9,10 @@ services:
       ProxyAuth__Enabled: "true"
       ProxyAuth__AccessToken: ${PROXYSIU_ACCESS_TOKEN:?set PROXYSIU_ACCESS_TOKEN in .env}
       ProxyAuth__CookieSecure: "true"
-      GeoIp__DatabasePath: /app/geoip/GeoLite2-City.mmdb
       GeoIp__UseIpSb: ${PROXYSIU_GEOIP_USE_IP_SB:-true}
       GeoIp__IpSbLookupIntervalSeconds: ${PROXYSIU_GEOIP_IP_SB_LOOKUP_INTERVAL_SECONDS:-2}
     volumes:
       - proxy-data:/app/data
-      - ${PROXYSIU_GEOIP_DIR:-./geoip}:/app/geoip:ro
     restart: unless-stopped
     networks:
       - internal

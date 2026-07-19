@@ -30,7 +30,7 @@ public sealed class ProxyMaintenanceWorker(
                 if (now >= nextScan)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Scan, false, stoppingToken);
-                    nextScan = NextRunWithJitter(_options.ScanIntervalMinutes);
+                    nextScan = NextRunWithJitter(_options.ScanIntervalMinutes, 0.15);
                     nextCheck = DateTimeOffset.UtcNow.AddSeconds(Random.Shared.Next(5, 21));
                     pool.SetNextCheckAt(nextCheck);
                 }
@@ -38,7 +38,7 @@ public sealed class ProxyMaintenanceWorker(
                 if (now >= nextCheck)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Check, false, stoppingToken);
-                    nextCheck = NextRunWithJitter(_options.CheckIntervalMinutes);
+                    nextCheck = NextRunWithJitter(_options.CheckIntervalMinutes, 0.50);
                     pool.SetNextCheckAt(nextCheck);
                 }
 
@@ -72,10 +72,10 @@ public sealed class ProxyMaintenanceWorker(
         await submission.Completion!.WaitAsync(cancellationToken);
     }
 
-    private static DateTimeOffset NextRunWithJitter(int intervalMinutes)
+    private static DateTimeOffset NextRunWithJitter(int intervalMinutes, double jitterRatio)
     {
         var intervalSeconds = intervalMinutes * 60;
-        var jitterSeconds = Math.Max(1, (int)Math.Round(intervalSeconds * 0.15));
+        var jitterSeconds = Math.Max(1, (int)Math.Round(intervalSeconds * jitterRatio));
         return DateTimeOffset.UtcNow.AddSeconds(
             intervalSeconds + Random.Shared.Next(-jitterSeconds, jitterSeconds + 1));
     }

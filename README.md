@@ -67,7 +67,7 @@ PROXYSIU_MAX_POOL_SIZE=6000
 PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS=12
 ```
 
-`PROXYSIU_MAX_POOL_SIZE` is the hard pool limit. At the limit, Dead records are evicted before Pending, and Alive records are the last choice. `PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` removes unseen Dead/Pending records and quarantines them briefly to prevent immediate re-addition.
+`PROXYSIU_MAX_POOL_SIZE` 是池总量硬上限。达到上限时，优先淘汰失败次数更多、最后出现更早的 Dead，再淘汰 Pending；Alive 最后才会被淘汰。`PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS` 会清理长期未出现在成功采集结果中的 Dead/Pending，并将其短期隔离，避免下一次采集立即回流。
 
 `PROXYSIU_ACCESS_TOKEN` 至少应为 24 个字符，并且 `.env` 不会提交到 Git。
 
@@ -151,6 +151,8 @@ API 仅运行在 `http://127.0.0.1:5080`。前端开发服务器将 `/api` 转�
 | `idc-safe` | 10 | 100 | 15–30 分钟随机 | 60 分钟 | 3 小时后首次、12 小时后再次 |
 
 首次扫描尚未结束时，每批只处理 Pending，避免首次检测和复测碰撞。之后每批为各状态保留名额，未使用的名额再由其他到期记录补齐。连续失败的代理会退避并进入持久化隔离，采集源不会立即把它重新加入。
+
+默认最多保留 6,000 条记录。源文件内容变化带来的新 IP 会参与容量淘汰，而不是让池无限增长；长期没有在成功采集中再次出现的 Dead/Pending 默认 12 小时后清理。修改 `.env` 后重启服务，首次采集或下一次“清理”任务会执行容量收敛。
 
 启动档位由 `.env` 的 `PROXYSIU_PROFILE` 决定；管理台可在没有维护任务运行时热切换。
 

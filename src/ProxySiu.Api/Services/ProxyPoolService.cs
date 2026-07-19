@@ -107,6 +107,12 @@ public sealed class ProxyPoolService
                 records = records.Where(proxy => proxy.Protocol == protocol);
             }
 
+            if (!string.IsNullOrWhiteSpace(query.Country))
+            {
+                records = records.Where(proxy => string.Equals(proxy.GeoLocation?.CountryCode, query.Country,
+                    StringComparison.OrdinalIgnoreCase));
+            }
+
             records = (query.Sort?.ToLowerInvariant(), query.Desc ?? true) switch
             {
                 ("address", false) => records.OrderBy(proxy => proxy.Host, StringComparer.OrdinalIgnoreCase)

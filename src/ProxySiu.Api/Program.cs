@@ -374,6 +374,7 @@ static void ValidateProxyQuery(ProxyQuery query)
 
     ValidateEnum<ProxyStatus>(query.Status, "status");
     ValidateEnum<ProxyProtocol>(query.Protocol, "protocol");
+    ValidateCountry(query.Country);
 
     var allowedSorts = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {

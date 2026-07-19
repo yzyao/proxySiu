@@ -194,6 +194,8 @@ curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
 
 维护请求会立即返回 `202 Accepted`。同一时间最多存在一个排队或运行中的维护任务。
 
+管理列表也支持 `GET /api/proxies?country=US`；网页“代理池”中的国家下拉使用同一筛选条件。
+
 ## IP 归属地
 
 归属地依据代理检测成功后得到的出口 IP 查询，显示国家、地区和城市；它不是精确街道地址。默认检测地址为 `https://api.ip.sb/geoip`：请求经待测代理发出，一次检测即可获得出口 IP 和归属地。`https://api.ip.sb/geoip?callback=getgeoip` 的 JSONP 响应也可解析，但服务端不需要使用 callback。

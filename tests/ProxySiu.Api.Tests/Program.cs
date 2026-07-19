@@ -323,6 +323,10 @@ static async Task CountrySelectionAsync()
         Assert(selected?.Id == us.Id, "Country-filtered selection must return the requested live country.");
         var exported = await pool.ExportAliveAsync(null, "CN", CancellationToken.None);
         Assert(exported == "2.2.2.2:8080", "Country-filtered export must contain only matching live proxies.");
+        var page = await pool.GetProxiesAsync(new ProxyQuery { Country = "CN", Page = 1, PageSize = 30 },
+            CancellationToken.None);
+        Assert(page.Total == 1 && page.Items.Single().Id == cn.Id,
+            "The management proxy list must filter records by country.");
     }
     finally
     {

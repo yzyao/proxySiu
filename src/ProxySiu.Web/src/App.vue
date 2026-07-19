@@ -46,8 +46,9 @@ const dashboard = ref({
 const proxyRows = ref([])
 const proxyTotal = ref(0)
 const sources = ref([])
+const countries = ref([])
 const checkingIds = reactive(new Set())
-const query = reactive({ q: '', status: '', protocol: '', sort: '', desc: false, page: 1, pageSize: 30 })
+const query = reactive({ q: '', status: '', protocol: '', country: '', sort: '', desc: false, page: 1, pageSize: 30 })
 
 const proxyDialogVisible = ref(false)
 const proxyForm = reactive({ host: '', port: 8080, protocol: 'http', isPinned: true })
@@ -121,7 +122,7 @@ onMounted(async () => {
 onBeforeUnmount(() => window.clearTimeout(pollTimer))
 
 async function initializeAuthenticatedApp() {
-  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources()])
+  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources(), loadCountries()])
   scheduleDashboardPoll()
 }
 
@@ -185,19 +186,27 @@ async function loadSources() {
   }
 }
 
+async function loadCountries() {
+  try {
+    countries.value = await api.countries(query.protocol)
+  } catch (error) {
+    ElMessage.error(error.message)
+  }
+}
+
 async function reloadAll() {
-  await Promise.all([loadDashboard(), loadProxies(), loadSources()])
+  await Promise.all([loadDashboard(), loadProxies(), loadSources(), loadCountries()])
 }
 
 function changeView(view) {
   activeView.value = view
-  if (view === 'proxies') loadProxies()
+  if (view === 'proxies') Promise.all([loadProxies(), loadCountries()])
   if (view === 'sources') loadSources()
 }
 
-function searchProxies() {
+async function searchProxies() {
   query.page = 1
-  loadProxies()
+  await Promise.all([loadProxies(), loadCountries()])
 }
 
 function sortProxies({ prop, order }) {
@@ -579,6 +588,9 @@ function successRate(row) {
               </el-select>
               <el-select v-model="query.status" clearable placeholder="全部状态" @change="searchProxies">
                 <el-option label="可用" value="alive" /><el-option label="待检测" value="pending" /><el-option label="失效" value="dead" />
+              </el-select>
+              <el-select v-model="query.country" clearable filterable placeholder="全部国家" @change="searchProxies">
+                <el-option v-for="country in countries" :key="country.code" :label="`${country.name} (${country.code}) · ${country.count}`" :value="country.code" />
               </el-select>
               <el-button :icon="Search" @click="searchProxies">筛选</el-button>
             </div>

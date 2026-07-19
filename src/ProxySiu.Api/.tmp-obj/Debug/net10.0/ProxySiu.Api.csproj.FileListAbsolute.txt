@@ -1,0 +1,6 @@
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\rpswa.dswa.cache.json
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\ProxySiu.Api.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\ProxySiu.Api.AssemblyInfoInputs.cache
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\ProxySiu.Api.AssemblyInfo.cs
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\ProxySiu.Api.csproj.CoreCompileInputs.cache
+C:\Users\yzyao\Documents\proxySiu\src\ProxySiu.Api\.tmp-obj\Debug\net10.0\ProxySiu.Api.MvcApplicationPartsAssemblyInfo.cache

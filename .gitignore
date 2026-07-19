@@ -1,0 +1,10 @@
+**/bin/
+**/obj/
+**/node_modules/
+src/ProxySiu.Api/data/
+*.user
+*.suo
+.vs/
+.idea/
+.vscode/
+npm-debug.log*

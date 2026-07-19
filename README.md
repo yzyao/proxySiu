@@ -18,7 +18,7 @@ curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
 # X-API-Key: $PROXYSIU_ACCESS_TOKEN is supported as an alternative.
 ```
 
-The API key cannot call management, source, scan, or settings endpoints; those require the browser session. Token login is enabled by Compose and is deliberately off for a plain local `dotnet run`. If you enable it outside HTTPS, set `ProxyAuth__CookieSecure=false` only for that local development environment.
+The API key cannot call management, source, scan, or settings endpoints; those require the browser session. Token login is required for both Compose and local `dotnet run`. For local HTTP/Vite development, copy `.env.example` to `.env` and leave `PROXYSIU_COOKIE_SECURE=false`; Compose overrides it to `true` behind HTTPS Nginx.
 
 Host-Nginx example (the Compose port remains private to the host):
 

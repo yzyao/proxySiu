@@ -11,6 +11,8 @@ using ProxySiu.Api.Services;
 using ProxySiu.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Configuration.AddInMemoryCollection(LoadDotEnvConfiguration(builder.Environment.ContentRootPath));
+builder.Configuration.AddEnvironmentVariables();
 var selectedProfile = ResolveProfile(builder.Configuration, builder.Environment.ContentRootPath);
 
 builder.Services.AddSingleton<ProxyPoolOptionsValidator>();
@@ -381,8 +383,8 @@ static string ResolveProfile(IConfiguration configuration, string contentRootPat
         return configuredProfile.Trim();
     }
 
-    var dotenvPath = Path.Combine(contentRootPath, ".env");
-    if (!File.Exists(dotenvPath))
+    var dotenvPath = FindDotEnvPath(contentRootPath);
+    if (dotenvPath is null)
     {
         return "high-throughput";
     }
@@ -412,6 +414,62 @@ static string ResolveProfile(IConfiguration configuration, string contentRootPat
     }
 
     return "high-throughput";
+}
+
+static IReadOnlyDictionary<string, string?> LoadDotEnvConfiguration(string contentRootPath)
+{
+    var dotenvPath = FindDotEnvPath(contentRootPath);
+    if (dotenvPath is null)
+    {
+        return new Dictionary<string, string?>();
+    }
+
+    var configuration = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+    foreach (var rawLine in File.ReadLines(dotenvPath))
+    {
+        var line = rawLine.Trim();
+        if (line.Length == 0 || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var separator = line.IndexOf('=');
+        if (separator <= 0)
+        {
+            continue;
+        }
+
+        var key = line[..separator].Trim();
+        var value = line[(separator + 1)..].Trim().Trim('"', '\'');
+        switch (key.ToUpperInvariant())
+        {
+            case "PROXYSIU_ACCESS_TOKEN":
+                configuration["ProxyAuth:AccessToken"] = value;
+                break;
+            case "PROXYSIU_COOKIE_SECURE":
+                configuration["ProxyAuth:CookieSecure"] = value;
+                break;
+            case "PROXYSIU_PROFILE":
+                configuration["ProxyPool:Profile"] = value;
+                break;
+        }
+    }
+
+    return configuration;
+}
+
+static string? FindDotEnvPath(string contentRootPath)
+{
+    for (var directory = new DirectoryInfo(contentRootPath); directory is not null; directory = directory.Parent)
+    {
+        var candidate = Path.Combine(directory.FullName, ".env");
+        if (File.Exists(candidate))
+        {
+            return candidate;
+        }
+    }
+
+    return null;
 }
 
 public partial class Program;

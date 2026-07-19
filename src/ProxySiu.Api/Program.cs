@@ -84,8 +84,6 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
 }));
 
 app.UseCors();
-app.UseDefaultFiles();
-app.UseStaticFiles();
 
 await app.Services.GetRequiredService<JsonProxyStore>().InitializeAsync();
 
@@ -265,7 +263,6 @@ api.MapPost("/actions/prune", (MaintenanceOperationQueue queue) =>
     QueueOperation(queue, MaintenanceOperationKind.Prune));
 
 app.Map("/api/{**path}", () => Results.NotFound(new { message = "API route does not exist." }));
-app.MapFallbackToFile("index.html");
 
 app.Run();
 

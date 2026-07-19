@@ -58,17 +58,19 @@ flowchart TD
 ## 本地运行
 
 ```powershell
-cd src\ProxySiu.Web
-npm install
-npm run build
-
-cd ..\ProxySiu.Api
+# 终端 1：后端 API
+cd src\ProxySiu.Api
 dotnet run
+
+# 终端 2：前端开发服务器
+cd ..\ProxySiu.Web
+npm install
+npm run dev
 ```
 
-打开 <http://localhost:5080>。前端开发模式可在 `src/ProxySiu.Web` 执行 `npm run dev`，Vite 会把 `/api` 转发到 5080 端口。
+后端 API 运行在 <http://127.0.0.1:5080>，例如 `/api/health`。管理界面独立运行：在 `src/ProxySiu.Web` 执行 `npm run dev` 后访问 <http://localhost:5173>；Vite 会把 `/api` 转发到 5080。`npm run build` 仅生成 `src/ProxySiu.Web/dist`，不会再写入 API 项目。
 
-首次启动默认会在后台采集六个内置列表，并分批检测候选代理。安全默认值为检测并发 10、每批 200、可用代理 30 分钟复检、失效代理 180 分钟复检，自动任务会加入随机时间抖动。所有周期、并发数、超时、保留策略和默认采集源均可在 `appsettings.json` 的 `ProxyPool` 节点修改。
+首次启动默认会在后台采集六个内置列表，并分批检测候选代理。默认 `high-throughput` 档使用并发 36、每批 400、5–15 分钟随机调度；`idc-safe` 档使用并发 10、每批 100、15–30 分钟随机调度。可通过 Web 下拉框热切，或通过 `.env` 的 `PROXYSIU_PROFILE` 设置启动档。所有档位参数和默认采集源均可在 `appsettings.json` 的 `ProxyPool` 节点修改。
 
 ## 常用 API
 

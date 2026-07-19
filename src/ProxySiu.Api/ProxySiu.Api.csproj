@@ -4,11 +4,5 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <SpaRoot>..\ProxySiu.Web\</SpaRoot>
   </PropertyGroup>
-
-  <Target Name="BuildFrontend" BeforeTargets="Publish" Condition="Exists('$(SpaRoot)node_modules')">
-    <Exec WorkingDirectory="$(SpaRoot)" Command="npm run build" />
-  </Target>
-
 </Project>

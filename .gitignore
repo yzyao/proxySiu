@@ -1,6 +1,7 @@
 **/bin/
 **/obj/
 **/node_modules/
+src/ProxySiu.Web/dist/
 src/ProxySiu.Api/data/
 *.user
 *.suo

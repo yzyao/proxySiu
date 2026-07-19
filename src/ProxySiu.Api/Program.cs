@@ -68,6 +68,11 @@ builder.Services.AddHttpClient("proxy-sources", client =>
         AutomaticDecompression = DecompressionMethods.All,
         UseCookies = false
     });
+builder.Services.AddHttpClient("geoip-lookup", client =>
+    {
+        client.Timeout = TimeSpan.FromSeconds(20);
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("ProxySiu-GeoIP-Lookup/1.0");
+    });
 
 builder.Services.AddSingleton<JsonProxyStore>();
 builder.Services.AddSingleton<ProxyListParser>();
@@ -76,6 +81,7 @@ builder.Services.AddSingleton<ProxyPoolService>();
 builder.Services.AddSingleton<MaintenanceOperationQueue>();
 builder.Services.AddHostedService<MaintenanceOperationWorker>();
 builder.Services.AddHostedService<ProxyMaintenanceWorker>();
+builder.Services.AddHostedService<GeoIpEnrichmentWorker>();
 
 var app = builder.Build();
 
@@ -463,6 +469,12 @@ static IReadOnlyDictionary<string, string?> LoadDotEnvConfiguration(string conte
                 break;
             case "PROXYSIU_GEOIP_DATABASE_PATH":
                 configuration["GeoIp:DatabasePath"] = value;
+                break;
+            case "PROXYSIU_GEOIP_USE_IP_SB":
+                configuration["GeoIp:UseIpSb"] = value;
+                break;
+            case "PROXYSIU_GEOIP_IP_SB_LOOKUP_INTERVAL_SECONDS":
+                configuration["GeoIp:IpSbLookupIntervalSeconds"] = value;
                 break;
         }
     }

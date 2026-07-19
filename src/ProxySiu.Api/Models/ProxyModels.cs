@@ -90,4 +90,5 @@ public sealed record ProxyCheckResult(
     long? LatencyMs,
     string? ExitIp,
     string? Error,
-    DateTimeOffset CheckedAt);
+    DateTimeOffset CheckedAt,
+    IpGeoLocation? GeoLocation = null);

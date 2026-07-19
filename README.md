@@ -182,13 +182,17 @@ curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
 
 ## IP 归属地
 
-归属地依据代理检测成功后得到的出口 IP 查询，显示国家、地区和城市；它不是精确街道地址。查询使用本地 MaxMind GeoLite2 City 数据库，不会为每个代理额外请求第三方 API。
+归属地依据代理检测成功后得到的出口 IP 查询，显示国家、地区和城市；它不是精确街道地址。默认检测地址为 `https://api.ip.sb/geoip`：请求经待测代理发出，一次检测即可获得出口 IP 和归属地。`https://api.ip.sb/geoip?callback=getgeoip` 的 JSONP 响应也可解析，但服务端不需要使用 callback。
+
+若使用自定义检测地址且没有归属地字段，后台会将出口 IP 去重后按默认每 2 秒一次的频率调用 `api.ip.sb/geoip/{IP}` 补全信息，避免额外请求影响检测速度或造成突发流量。
+
+### 手动放置
 
 1. 注册并下载 [GeoLite2 City](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) 的 `GeoLite2-City.mmdb`。
 2. VPS 部署时，将文件放入项目根目录的 `geoip/GeoLite2-City.mmdb`。
 3. 重建并启动容器：`docker compose up -d --build`。
 
-Compose 会将该目录以只读方式挂载到 API 容器。缺少数据库文件时，检测和代理池仍正常运行，只是不显示归属地；补上文件后重启即可。已有记录会在下次成功检测时补全归属地。
+`geoip/` 是可选的只读本地数据库目录。缺少 MMDB 文件时，归属地仍会通过 `api.ip.sb` 获取；已有记录会在下次成功检测时补全归属地。
 
 本地开发默认从 `src/ProxySiu.Api/data/GeoLite2-City.mmdb` 读取；也可在 `.env` 设置 `PROXYSIU_GEOIP_DATABASE_PATH` 指向任意本地 `.mmdb` 文件。
 

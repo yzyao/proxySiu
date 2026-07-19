@@ -829,9 +829,13 @@ public sealed class ProxyPoolService
         proxy.LastCheckedAt = result.CheckedAt;
         proxy.LatencyMs = result.LatencyMs;
         proxy.ExitIp = result.ExitIp;
-        if (result.IsAlive && _geoIp?.Lookup(result.ExitIp) is { } location)
+        if (result.IsAlive && (result.GeoLocation ?? _geoIp?.Lookup(result.ExitIp)) is { } location)
         {
             proxy.GeoLocation = location;
+        }
+        else if (result.IsAlive)
+        {
+            _geoIp?.QueueRemoteLookup(result.ExitIp);
         }
         proxy.LastError = result.Error;
         if (result.IsAlive)

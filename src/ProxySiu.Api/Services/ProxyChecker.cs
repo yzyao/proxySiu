@@ -52,8 +52,9 @@ public sealed class ProxyChecker(ProxyPoolProfileManager profileManager, ILogger
             var body = await response.Content.ReadAsStringAsync(timeout.Token);
             stopwatch.Stop();
 
+            var checkResponse = ParseCheckResponse(body);
             return new ProxyCheckResult(proxy.Id, true, stopwatch.ElapsedMilliseconds,
-                ExtractIp(body), null, checkedAt);
+                checkResponse.ExitIp, null, checkedAt, checkResponse.GeoLocation);
         }
         catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException)
         {
@@ -65,27 +66,49 @@ public sealed class ProxyChecker(ProxyPoolProfileManager profileManager, ILogger
 
     private static string FormatHost(string host) => host.Contains(':') ? $"[{host}]" : host;
 
-    private static string? ExtractIp(string body)
+    private static CheckResponse ParseCheckResponse(string body)
     {
+        var json = body.Trim();
+        if (!json.StartsWith('{'))
+        {
+            var opening = json.IndexOf('(');
+            var closing = json.LastIndexOf(')');
+            if (opening >= 0 && closing > opening)
+            {
+                json = json[(opening + 1)..closing];
+            }
+        }
+
         try
         {
-            using var document = JsonDocument.Parse(body);
-            if (document.RootElement.TryGetProperty("ip", out var property))
-            {
-                return property.GetString();
-            }
+            using var document = JsonDocument.Parse(json);
+            var root = document.RootElement;
+            var location = new IpGeoLocation(
+                ReadString(root, "country_code"),
+                ReadString(root, "country"),
+                ReadString(root, "region_code"),
+                ReadString(root, "region"),
+                ReadString(root, "city"));
+            return new CheckResponse(ReadString(root, "ip"), location.HasValue ? location : null);
         }
         catch (JsonException)
         {
             var value = body.Trim();
             if (IPAddress.TryParse(value, out _))
             {
-                return value;
+                return new CheckResponse(value, null);
             }
         }
 
-        return null;
+        return new CheckResponse(null, null);
     }
+
+    private static string? ReadString(JsonElement element, string name) =>
+        element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private sealed record CheckResponse(string? ExitIp, IpGeoLocation? GeoLocation);
 
     private static string Truncate(string value) => value.Length <= 240 ? value : value[..240];
 }

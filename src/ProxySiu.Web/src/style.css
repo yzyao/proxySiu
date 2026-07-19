@@ -116,6 +116,7 @@ button, input { font: inherit; }
 .queue-schedule strong { margin-top: 3px; color: #33425a; font-size: 11px; }
 .queue-schedule em { color: #73829a; font-size: 9px; font-style: normal; }
 .queue-time { margin-top: 12px; display: flex; justify-content: space-between; color: #9aa4b4; font-size: 9px; }
+.operation-summary { margin-top: 12px; padding: 10px 11px; border-radius: 9px; background: #f4f7fc; display: grid; gap: 4px; }.operation-summary strong { color: #32486d; font-size: 10px; }.operation-summary span, .operation-summary small { color: #7f8ba0; font-size: 9px; }
 .queue-actions { padding-top: 8px; }
 
 .table-panel { overflow: hidden; }

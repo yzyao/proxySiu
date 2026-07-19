@@ -69,6 +69,7 @@ const availabilityTone = computed(() => {
 })
 const checkQueue = computed(() => dashboard.value.operations?.checkQueue || {})
 const maintenanceOperation = computed(() => dashboard.value.operations?.activeOperation || null)
+const recentOperation = computed(() => maintenanceOperation.value || dashboard.value.operations?.lastOperation || null)
 const maintenanceBusy = computed(() => maintenanceOperation.value !== null)
 const checkProgress = computed(() => Math.round(checkQueue.value.progressPercent || 0))
 const displayedCheckProgress = computed(() => checkQueue.value.isRunning || !checkQueue.value.waiting ? checkProgress.value : 0)
@@ -378,6 +379,20 @@ function geoLabel(location) {
   return parts.length ? parts.join(' · ') : '归属地未知'
 }
 
+function operationKindLabel(kind) {
+  return { scan: '采集', check: '检测', refresh: '采集并检测', prune: '清理' }[kind] || kind
+}
+
+function operationStatusLabel(status) {
+  return { queued: '排队中', running: '运行中', completed: '已完成', failed: '失败', cancelled: '已取消' }[status] || status
+}
+
+function operationStats(operation) {
+  const result = operation?.result
+  if (!result) return operation?.message || '等待任务结果'
+  return `处理 ${result.processed} · 新增 ${result.added} · 更新 ${result.updated} · 清理 ${result.removed} · 失败 ${result.failed}`
+}
+
 function statusMeta(status) {
   return {
     alive: ['可用', 'success'],
@@ -567,6 +582,11 @@ function successRate(row) {
               <div class="queue-time">
                 <span>{{ checkQueue.isRunning ? `开始于 ${formatDate(checkQueue.startedAt)}` : `完成于 ${formatDate(checkQueue.finishedAt)}` }}</span>
                 <span>并发上限 {{ checkQueue.concurrency || '—' }}</span>
+              </div>
+              <div v-if="recentOperation" class="operation-summary">
+                <strong>{{ operationKindLabel(recentOperation.kind) }} · {{ operationStatusLabel(recentOperation.status) }}</strong>
+                <span>开始 {{ formatDate(recentOperation.startedAt || recentOperation.queuedAt) }} · 完成 {{ formatDate(recentOperation.completedAt) }}</span>
+                <small>{{ operationStats(recentOperation) }}</small>
               </div>
             </div>
             <div class="task-list queue-actions">

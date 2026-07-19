@@ -78,6 +78,9 @@ public sealed class MaintenanceOperationQueue
         await foreach (var operation in _channel.Reader.ReadAllAsync(stoppingToken))
         {
             Start(operation);
+            var operationStartedAt = operation.Snapshot.StartedAt;
+            logger.LogInformation("Maintenance operation {OperationId} ({OperationKind}) started at {StartedAt}; force={Force}",
+                operation.Snapshot.Id, operation.Snapshot.Kind, operationStartedAt, operation.Snapshot.Force);
             var startedAt = Stopwatch.GetTimestamp();
             try
             {
@@ -89,19 +92,26 @@ public sealed class MaintenanceOperationQueue
                     MaintenanceOperationKind.Prune => await pool.PruneAsync(stoppingToken),
                     _ => throw new ArgumentOutOfRangeException()
                 };
-                Complete(operation, MaintenanceOperationStatus.Completed, result.Message, result);
-                logger.LogInformation("Maintenance operation {OperationId} ({OperationKind}) completed in {ElapsedMilliseconds} ms",
-                    operation.Snapshot.Id, operation.Snapshot.Kind, Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds);
+                var completed = Complete(operation, MaintenanceOperationStatus.Completed, result.Message, result);
+                logger.LogInformation(
+                    "Maintenance operation {OperationId} ({OperationKind}) completed; started={StartedAt}, completed={CompletedAt}, elapsedMs={ElapsedMilliseconds}, processed={Processed}, added={Added}, updated={Updated}, removed={Removed}, failed={Failed}",
+                    completed.Id, completed.Kind, completed.StartedAt, completed.CompletedAt,
+                    Math.Round(Stopwatch.GetElapsedTime(startedAt).TotalMilliseconds), result.Processed, result.Added,
+                    result.Updated, result.Removed, result.Failed);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
-                Complete(operation, MaintenanceOperationStatus.Cancelled, "Maintenance operation cancelled during shutdown.", null);
+                var cancelled = Complete(operation, MaintenanceOperationStatus.Cancelled,
+                    "Maintenance operation cancelled during shutdown.", null);
+                logger.LogWarning("Maintenance operation {OperationId} ({OperationKind}) cancelled; started={StartedAt}, completed={CompletedAt}",
+                    cancelled.Id, cancelled.Kind, cancelled.StartedAt, cancelled.CompletedAt);
             }
             catch (Exception exception)
             {
-                logger.LogError(exception, "Maintenance operation {OperationId} ({OperationKind}) failed",
-                    operation.Snapshot.Id, operation.Snapshot.Kind);
-                Complete(operation, MaintenanceOperationStatus.Failed, "Maintenance operation failed. Check server logs.", null);
+                var failed = Complete(operation, MaintenanceOperationStatus.Failed,
+                    "Maintenance operation failed. Check server logs.", null);
+                logger.LogError(exception, "Maintenance operation {OperationId} ({OperationKind}) failed; started={StartedAt}, completed={CompletedAt}",
+                    failed.Id, failed.Kind, failed.StartedAt, failed.CompletedAt);
             }
         }
     }
@@ -138,7 +148,7 @@ public sealed class MaintenanceOperationQueue
         }
     }
 
-    private void Complete(QueuedOperation operation, MaintenanceOperationStatus status, string message,
+    private MaintenanceOperationDto Complete(QueuedOperation operation, MaintenanceOperationStatus status, string message,
         PoolOperationResult? result)
     {
         MaintenanceOperationDto completed;
@@ -160,6 +170,7 @@ public sealed class MaintenanceOperationQueue
         }
 
         operation.Completion.TrySetResult(completed);
+        return completed;
     }
 
     private sealed class QueuedOperation(MaintenanceOperationDto snapshot)

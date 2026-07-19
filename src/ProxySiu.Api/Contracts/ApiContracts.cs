@@ -1,4 +1,5 @@
 using ProxySiu.Api.Models;
+using ProxySiu.Api.Options;
 
 namespace ProxySiu.Api.Contracts;
 
@@ -27,6 +28,11 @@ public sealed class SourceWriteRequest
     public string Url { get; set; } = string.Empty;
     public ProxyProtocol Protocol { get; set; } = ProxyProtocol.Http;
     public bool Enabled { get; set; } = true;
+}
+
+public sealed class ProfileUpdateRequest
+{
+    public string Profile { get; set; } = string.Empty;
 }
 
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
@@ -130,7 +136,8 @@ public sealed record DashboardDto(
     int EnabledSources,
     IReadOnlyList<ProtocolSummaryDto> Protocols,
     OperationStateDto Operations,
-    DateTimeOffset UpdatedAt);
+    DateTimeOffset UpdatedAt,
+    ProxyPoolProfileSummary? Profile = null);
 
 public sealed record PoolOperationResult(
     bool Busy,

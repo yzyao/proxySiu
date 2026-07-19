@@ -78,7 +78,8 @@ static Task OptionsValidatorAsync()
         CheckConcurrency = 36,
         SourceConcurrency = 3,
         ScanIntervalMinutes = 120,
-        CheckIntervalMinutes = 10,
+        CheckIntervalMinMinutes = 5,
+        CheckIntervalMaxMinutes = 15,
         RecheckAliveMinutes = 30,
         RecheckDeadMinutes = 180,
         MaxChecksPerCycle = 400,
@@ -91,6 +92,28 @@ static Task OptionsValidatorAsync()
 
     var remote = validator.Validate(null, new ProxyPoolOptions { AllowRemoteAccess = true });
     Assert(remote.Failed, "Remote access must fail validation in the local profile.");
+
+    var profiled = new ProxyPoolOptions
+    {
+        Profiles = new Dictionary<string, ProxyPoolProfile>
+        {
+            ["idc-safe"] = new()
+            {
+                CheckConcurrency = 10,
+                MaxChecksPerCycle = 100,
+                CheckIntervalMinMinutes = 15,
+                CheckIntervalMaxMinutes = 30,
+                AliveChecksPerCycle = 50,
+                PendingChecksPerCycle = 40,
+                DeadChecksPerCycle = 10
+            }
+        }
+    };
+    ProxyPoolProfileSelector.Apply(profiled, "IDC-SAFE");
+    Assert(profiled.Profile == "IDC-SAFE" && profiled.CheckConcurrency == 10 &&
+           profiled.MaxChecksPerCycle == 100 && profiled.CheckIntervalMinMinutes == 15 &&
+           profiled.CheckIntervalMaxMinutes == 30,
+        "Profile selection must override the runtime check rate.");
     return Task.CompletedTask;
 }
 
@@ -119,12 +142,13 @@ static Task CheckPlannerAsync()
         RecheckDeadMinutes = 60,
         SecondDeadRetryMinutes = 360
     });
+    var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
     var environment = new TestHostEnvironment(Path.GetTempPath());
     var pool = new ProxyPoolService(
         new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance),
         new ProxyListParser(options),
-        new ProxyChecker(options, NullLogger<ProxyChecker>.Instance),
-        new TestHttpClientFactory(), options, NullLogger<ProxyPoolService>.Instance);
+        new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance),
+        new TestHttpClientFactory(), profileManager, NullLogger<ProxyPoolService>.Instance);
     var now = DateTimeOffset.UtcNow;
 
     var bootstrap = new ProxyPoolState

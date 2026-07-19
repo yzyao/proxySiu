@@ -38,5 +38,7 @@ export const api = {
   addSource: (data) => request('/sources', { method: 'POST', body: JSON.stringify(data) }),
   updateSource: (id, data) => request(`/sources/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteSource: (id) => request(`/sources/${id}`, { method: 'DELETE' }),
+  profile: () => request('/settings/profile'),
+  updateProfile: (profile) => request('/settings/profile', { method: 'PUT', body: JSON.stringify({ profile }) }),
   action: (name, params = {}) => request(`/actions/${name}?${queryString(params)}`, { method: 'POST' })
 }

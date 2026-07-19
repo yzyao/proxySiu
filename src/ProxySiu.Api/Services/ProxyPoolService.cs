@@ -15,7 +15,7 @@ public sealed class ProxyPoolService
     private readonly ProxyListParser _parser;
     private readonly ProxyChecker _checker;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly ProxyPoolOptions _options;
+    private readonly ProxyPoolProfileManager _profileManager;
     private readonly ILogger<ProxyPoolService> _logger;
     private int _isScanning;
     private int _isChecking;
@@ -32,20 +32,21 @@ public sealed class ProxyPoolService
     private DateTimeOffset? _lastCheckAt;
     private DateTimeOffset? _lastPruneAt;
     private string? _lastMessage;
+    private ProxyPoolOptions Options => _profileManager.Current;
 
     public ProxyPoolService(
         JsonProxyStore store,
         ProxyListParser parser,
         ProxyChecker checker,
         IHttpClientFactory httpClientFactory,
-        IOptions<ProxyPoolOptions> options,
+        ProxyPoolProfileManager profileManager,
         ILogger<ProxyPoolService> logger)
     {
         _store = store;
         _parser = parser;
         _checker = checker;
         _httpClientFactory = httpClientFactory;
-        _options = options.Value;
+        _profileManager = profileManager;
         _logger = logger;
     }
 
@@ -158,7 +159,7 @@ public sealed class ProxyPoolService
             throw new ArgumentException("请输入有效的代理地址和端口。", nameof(request));
         }
 
-        if (!_options.AllowPrivateNetworks && !await EndpointSafety.IsPublicHostAsync(host, cancellationToken))
+        if (!Options.AllowPrivateNetworks && !await EndpointSafety.IsPublicHostAsync(host, cancellationToken))
         {
             throw new ArgumentException("默认只允许可公开路由的代理地址；如确需内网代理，请开启 AllowPrivateNetworks。",
                 nameof(request));
@@ -330,7 +331,7 @@ public sealed class ProxyPoolService
             var results = new ConcurrentBag<SourceFetchResult>();
             await Parallel.ForEachAsync(sources, new ParallelOptions
             {
-                MaxDegreeOfParallelism = Math.Clamp(_options.SourceConcurrency, 1, 16),
+                MaxDegreeOfParallelism = Math.Clamp(Options.SourceConcurrency, 1, 16),
                 CancellationToken = cancellationToken
             }, async (source, token) => results.Add(await FetchSourceAsync(source, token)));
 
@@ -444,11 +445,11 @@ public sealed class ProxyPoolService
                 return SetMessage(new PoolOperationResult(false, "当前没有到期需要检测的代理。"));
             }
 
-            _lastMessage = $"检测队列已启动：共 {proxies.Count} 个代理，并发 {_options.CheckConcurrency}。";
+            _lastMessage = $"检测队列已启动：共 {proxies.Count} 个代理，并发 {Options.CheckConcurrency}。";
             var results = new ConcurrentBag<ProxyCheckResult>();
             await Parallel.ForEachAsync(proxies, new ParallelOptions
             {
-                MaxDegreeOfParallelism = Math.Clamp(_options.CheckConcurrency, 1, 500),
+                MaxDegreeOfParallelism = Math.Clamp(Options.CheckConcurrency, 1, 500),
                 CancellationToken = cancellationToken
             }, async (proxy, token) =>
             {
@@ -519,13 +520,13 @@ public sealed class ProxyPoolService
         try
         {
             var now = DateTimeOffset.UtcNow;
-            var cutoff = now.AddHours(-Math.Clamp(_options.RemoveDeadAfterHours, 1, 24 * 365));
+            var cutoff = now.AddHours(-Math.Clamp(Options.RemoveDeadAfterHours, 1, 24 * 365));
             var removed = await _store.WriteAsync(state =>
             {
                 state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
                 var toRemove = state.Proxies.Where(proxy =>
                     !proxy.IsPinned && proxy.Status == ProxyStatus.Dead &&
-                    proxy.ConsecutiveFailures >= Math.Max(1, _options.MaxConsecutiveFailures) &&
+                    proxy.ConsecutiveFailures >= Math.Max(1, Options.MaxConsecutiveFailures) &&
                     (proxy.QuarantinedUntil is null || proxy.QuarantinedUntil <= now) &&
                     (proxy.LastAliveAt ?? proxy.FirstSeenAt) < cutoff).ToList();
 
@@ -536,7 +537,7 @@ public sealed class ProxyPoolService
                     state.Quarantines.Add(new ProxyQuarantine
                     {
                         Key = proxy.Key,
-                        ExpiresAt = now.AddHours(Math.Max(1, _options.ReaddQuarantineHours))
+                        ExpiresAt = now.AddHours(Math.Max(1, Options.ReaddQuarantineHours))
                     });
                 }
 
@@ -560,13 +561,13 @@ public sealed class ProxyPoolService
         {
             var currentUri = new Uri(source.Url, UriKind.Absolute);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.DownloadTimeoutSeconds, 3, 120)));
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(Options.DownloadTimeoutSeconds, 3, 120)));
             var client = _httpClientFactory.CreateClient("proxy-sources");
 
             for (var redirect = 0; redirect <= 5; redirect++)
             {
                 if (currentUri.Scheme is not ("http" or "https") ||
-                    (!_options.AllowPrivateNetworks &&
+                    (!Options.AllowPrivateNetworks &&
                      !await EndpointSafety.IsPublicHostAsync(currentUri.Host, timeout.Token)))
                 {
                     throw new InvalidOperationException("采集源不是安全的公网 HTTP(S) 地址。" );
@@ -586,7 +587,7 @@ public sealed class ProxyPoolService
                 response.EnsureSuccessStatusCode();
                 var content = await ReadLimitedStringAsync(response.Content, timeout.Token);
                 return new SourceFetchResult(source.Id,
-                    _parser.Parse(content, source.Protocol, Math.Clamp(_options.MaxCandidatesPerSource, 1, 50_000)),
+                    _parser.Parse(content, source.Protocol, Math.Clamp(Options.MaxCandidatesPerSource, 1, 50_000)),
                     null);
             }
 
@@ -603,7 +604,7 @@ public sealed class ProxyPoolService
 
     private async Task<string> ReadLimitedStringAsync(HttpContent content, CancellationToken cancellationToken)
     {
-        if (content.Headers.ContentLength > _options.MaxSourceBytes)
+        if (content.Headers.ContentLength > Options.MaxSourceBytes)
         {
             throw new InvalidOperationException("采集源内容超过大小限制。" );
         }
@@ -611,7 +612,7 @@ public sealed class ProxyPoolService
         await using var source = await content.ReadAsStreamAsync(cancellationToken);
         using var target = new MemoryStream();
         var buffer = new byte[16 * 1024];
-        var maximum = Math.Clamp(_options.MaxSourceBytes, 1024, 20_000_000);
+        var maximum = Math.Clamp(Options.MaxSourceBytes, 1024, 20_000_000);
         while (true)
         {
             var read = await source.ReadAsync(buffer, cancellationToken);
@@ -645,7 +646,7 @@ public sealed class ProxyPoolService
     private IReadOnlyList<ProxyRecord> SelectProxiesForCheck(ProxyPoolState state, bool force,
         DateTimeOffset now)
     {
-        var capacity = Math.Clamp(_options.MaxChecksPerCycle, 1, 20_000);
+        var capacity = Math.Clamp(Options.MaxChecksPerCycle, 1, 20_000);
         var initialPending = !state.InitialSweepCompleted && state.Proxies.Any(proxy =>
             proxy.Status == ProxyStatus.Pending);
         if (initialPending)
@@ -666,9 +667,9 @@ public sealed class ProxyPoolService
             .OrderBy(proxy => GetNextCheckAt(proxy)).ToList();
 
         var selected = new List<ProxyRecord>(capacity);
-        Add(alive, _options.AliveChecksPerCycle);
-        Add(pending, _options.PendingChecksPerCycle);
-        Add(dead, _options.DeadChecksPerCycle);
+        Add(alive, Options.AliveChecksPerCycle);
+        Add(pending, Options.PendingChecksPerCycle);
+        Add(dead, Options.DeadChecksPerCycle);
         Add(pending, capacity);
         Add(dead, capacity);
         Add(alive, capacity);
@@ -719,7 +720,7 @@ public sealed class ProxyPoolService
                 inFlight,
                 Volatile.Read(ref _checkAlive),
                 Volatile.Read(ref _checkFailed),
-                Math.Clamp(_options.CheckConcurrency, 1, 500),
+                Math.Clamp(Options.CheckConcurrency, 1, 500),
                 progress,
                 startedAt,
                 finishedAt));
@@ -798,8 +799,8 @@ public sealed class ProxyPoolService
             proxy.Status = ProxyStatus.Dead;
             proxy.FailureCount++;
             proxy.ConsecutiveFailures++;
-            proxy.QuarantinedUntil = proxy.ConsecutiveFailures >= Math.Max(1, _options.MaxConsecutiveFailures)
-                ? result.CheckedAt.AddHours(Math.Max(1, _options.DeadQuarantineHours))
+            proxy.QuarantinedUntil = proxy.ConsecutiveFailures >= Math.Max(1, Options.MaxConsecutiveFailures)
+                ? result.CheckedAt.AddHours(Math.Max(1, Options.DeadQuarantineHours))
                 : null;
         }
     }
@@ -869,7 +870,7 @@ public sealed class ProxyPoolService
 
         if (proxy.Status == ProxyStatus.Alive)
         {
-            return proxy.LastCheckedAt.Value.AddMinutes(Math.Max(1, _options.RecheckAliveMinutes));
+            return proxy.LastCheckedAt.Value.AddMinutes(Math.Max(1, Options.RecheckAliveMinutes));
         }
 
         if (proxy.QuarantinedUntil is { } quarantinedUntil)
@@ -879,9 +880,9 @@ public sealed class ProxyPoolService
 
         var minutes = proxy.ConsecutiveFailures switch
         {
-            <= 1 => Math.Max(1, _options.RecheckDeadMinutes),
-            2 => Math.Max(1, _options.SecondDeadRetryMinutes),
-            _ => Math.Max(1, _options.DeadQuarantineHours) * 60
+            <= 1 => Math.Max(1, Options.RecheckDeadMinutes),
+            2 => Math.Max(1, Options.SecondDeadRetryMinutes),
+            _ => Math.Max(1, Options.DeadQuarantineHours) * 60
         };
         return proxy.LastCheckedAt.Value.AddMinutes(minutes);
     }

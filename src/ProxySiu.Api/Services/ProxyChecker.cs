@@ -1,22 +1,20 @@
 using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
-using Microsoft.Extensions.Options;
 using ProxySiu.Api.Models;
 using ProxySiu.Api.Options;
 
 namespace ProxySiu.Api.Services;
 
-public sealed class ProxyChecker(IOptions<ProxyPoolOptions> options, ILogger<ProxyChecker> logger)
+public sealed class ProxyChecker(ProxyPoolProfileManager profileManager, ILogger<ProxyChecker> logger)
 {
-    private readonly ProxyPoolOptions _options = options.Value;
-
     public async Task<ProxyCheckResult> CheckAsync(ProxyRecord proxy, CancellationToken cancellationToken)
     {
+        var options = profileManager.Current;
         var checkedAt = DateTimeOffset.UtcNow;
         try
         {
-            if (!_options.AllowPrivateNetworks &&
+            if (!options.AllowPrivateNetworks &&
                 !await EndpointSafety.IsPublicHostAsync(proxy.Host, cancellationToken))
             {
                 return new ProxyCheckResult(proxy.Id, false, null, null,
@@ -42,11 +40,11 @@ public sealed class ProxyChecker(IOptions<ProxyPoolOptions> options, ILogger<Pro
             {
                 Timeout = Timeout.InfiniteTimeSpan
             };
-            using var request = new HttpRequestMessage(HttpMethod.Get, _options.CheckUrl);
+            using var request = new HttpRequestMessage(HttpMethod.Get, options.CheckUrl);
             request.Headers.UserAgent.ParseAdd("ProxySiu-Checker/1.0");
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(_options.RequestTimeoutSeconds, 2, 60)));
+            timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(options.RequestTimeoutSeconds, 2, 60)));
             var stopwatch = Stopwatch.StartNew();
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
                 timeout.Token);

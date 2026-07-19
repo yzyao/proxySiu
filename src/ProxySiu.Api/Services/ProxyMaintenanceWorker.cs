@@ -1,4 +1,3 @@
-using Microsoft.Extensions.Options;
 using ProxySiu.Api.Contracts;
 using ProxySiu.Api.Options;
 
@@ -7,16 +6,15 @@ namespace ProxySiu.Api.Services;
 public sealed class ProxyMaintenanceWorker(
     ProxyPoolService pool,
     MaintenanceOperationQueue queue,
-    IOptions<ProxyPoolOptions> options,
+    ProxyPoolProfileManager profileManager,
     ILogger<ProxyMaintenanceWorker> logger) : BackgroundService
 {
-    private readonly ProxyPoolOptions _options = options.Value;
-
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        var nextScan = _options.ScanOnStartup
+        var initialOptions = profileManager.Current;
+        var nextScan = initialOptions.ScanOnStartup
             ? DateTimeOffset.UtcNow.AddSeconds(3)
-            : DateTimeOffset.UtcNow.AddMinutes(_options.ScanIntervalMinutes);
+            : DateTimeOffset.UtcNow.AddMinutes(initialOptions.ScanIntervalMinutes);
         var nextCheck = DateTimeOffset.UtcNow.AddSeconds(8);
         var nextPrune = DateTimeOffset.UtcNow.AddMinutes(2);
         pool.SetNextCheckAt(nextCheck);
@@ -27,10 +25,11 @@ public sealed class ProxyMaintenanceWorker(
             try
             {
                 var now = DateTimeOffset.UtcNow;
+                var options = profileManager.Current;
                 if (now >= nextScan)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Scan, false, stoppingToken);
-                    nextScan = NextRunWithJitter(_options.ScanIntervalMinutes, 0.15);
+                    nextScan = NextRunWithJitter(options.ScanIntervalMinutes, 0.15);
                     nextCheck = DateTimeOffset.UtcNow.AddSeconds(Random.Shared.Next(5, 21));
                     pool.SetNextCheckAt(nextCheck);
                 }
@@ -38,7 +37,7 @@ public sealed class ProxyMaintenanceWorker(
                 if (now >= nextCheck)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Check, false, stoppingToken);
-                    nextCheck = NextRunWithJitter(_options.CheckIntervalMinutes, 0.50);
+                    nextCheck = NextCheckRun(options);
                     pool.SetNextCheckAt(nextCheck);
                 }
 
@@ -79,4 +78,9 @@ public sealed class ProxyMaintenanceWorker(
         return DateTimeOffset.UtcNow.AddSeconds(
             intervalSeconds + Random.Shared.Next(-jitterSeconds, jitterSeconds + 1));
     }
+
+    private static DateTimeOffset NextCheckRun(ProxyPoolOptions options) =>
+        DateTimeOffset.UtcNow.AddMinutes(Random.Shared.Next(
+            options.CheckIntervalMinMinutes,
+            options.CheckIntervalMaxMinutes + 1));
 }

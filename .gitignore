@@ -8,3 +8,4 @@ src/ProxySiu.Api/data/
 .idea/
 .vscode/
 npm-debug.log*
+.env

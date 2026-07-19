@@ -25,6 +25,8 @@ import { api } from './api'
 const activeView = ref('dashboard')
 const loading = ref(false)
 const actionBusy = ref('')
+const profileSwitching = ref(false)
+const selectedProfile = ref('')
 const dashboard = ref({
   total: 0,
   alive: 0,
@@ -112,6 +114,7 @@ async function loadDashboard() {
     const wasMaintaining = maintenanceBusy.value
     const nextDashboard = await api.dashboard()
     dashboard.value = nextDashboard
+    if (nextDashboard.profile?.name) selectedProfile.value = nextDashboard.profile.name
     if (wasMaintaining && !nextDashboard.operations?.activeOperation) {
       await Promise.all([loadProxies(), loadSources()])
     }
@@ -197,6 +200,22 @@ async function runAction(name, label, params = {}) {
     ElMessage.error(error.message)
   } finally {
     actionBusy.value = ''
+  }
+}
+
+async function switchProfile(profile) {
+  if (!profile) return
+  profileSwitching.value = true
+  try {
+    const summary = await api.updateProfile(profile)
+    selectedProfile.value = summary.name
+    await loadDashboard()
+    ElMessage.success(`已切换为 ${summary.name}`)
+  } catch (error) {
+    ElMessage.error(error.message)
+    await loadDashboard()
+  } finally {
+    profileSwitching.value = false
   }
 }
 
@@ -378,6 +397,10 @@ function successRate(row) {
           <p>{{ currentTitle[1] }}</p>
         </div>
         <div class="top-actions">
+          <el-select v-model="selectedProfile" class="profile-select" size="small" :loading="profileSwitching" :disabled="maintenanceBusy" @change="switchProfile">
+            <el-option label="高吞吐" value="high-throughput" />
+            <el-option label="IDC 安全" value="idc-safe" />
+          </el-select>
           <span class="updated"><Timer /> 数据更新于 {{ formatDate(dashboard.updatedAt) }}</span>
           <el-button :icon="Refresh" :loading="actionBusy === 'refresh'" @click="runAction('refresh', '刷新')">
             一键刷新

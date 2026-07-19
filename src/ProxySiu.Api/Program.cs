@@ -10,11 +10,17 @@ using ProxySiu.Api.Services;
 using ProxySiu.Api.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
+var selectedProfile = ResolveProfile(builder.Configuration, builder.Environment.ContentRootPath);
 
-builder.Services.AddSingleton<IValidateOptions<ProxyPoolOptions>, ProxyPoolOptionsValidator>();
+builder.Services.AddSingleton<ProxyPoolOptionsValidator>();
+builder.Services.AddSingleton<IValidateOptions<ProxyPoolOptions>>(serviceProvider =>
+    serviceProvider.GetRequiredService<ProxyPoolOptionsValidator>());
 builder.Services.AddOptions<ProxyPoolOptions>()
     .Bind(builder.Configuration.GetSection(ProxyPoolOptions.SectionName))
     .ValidateOnStart();
+builder.Services.PostConfigure<ProxyPoolOptions>(options => ProxyPoolProfileSelector.Apply(options, selectedProfile));
+builder.Services.AddSingleton(serviceProvider => new ProxyPoolProfileManager(builder.Configuration,
+    serviceProvider.GetRequiredService<ProxyPoolOptionsValidator>(), selectedProfile));
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -85,11 +91,13 @@ await app.Services.GetRequiredService<JsonProxyStore>().InitializeAsync();
 
 var api = app.MapGroup("/api");
 
-api.MapGet("/health", async (JsonProxyStore store, CancellationToken cancellationToken) =>
+api.MapGet("/health", async (JsonProxyStore store, ProxyPoolProfileManager profileManager,
+    CancellationToken cancellationToken) =>
 {
     var state = await store.ReadAsync(value => new
     {
         status = "ok",
+        profile = profileManager.GetSummary(),
         proxies = value.Proxies.Count,
         sources = value.Sources.Count,
         value.UpdatedAt
@@ -98,6 +106,7 @@ api.MapGet("/health", async (JsonProxyStore store, CancellationToken cancellatio
 });
 
 api.MapGet("/dashboard", async (ProxyPoolService pool, MaintenanceOperationQueue queue,
+    ProxyPoolProfileManager profileManager,
     CancellationToken cancellationToken) =>
 {
     var dashboard = await pool.GetDashboardAsync(cancellationToken);
@@ -108,7 +117,8 @@ api.MapGet("/dashboard", async (ProxyPoolService pool, MaintenanceOperationQueue
         {
             ActiveOperation = operations.Active,
             LastOperation = operations.Last
-        }
+        },
+        Profile = profileManager.GetSummary()
     });
 });
 
@@ -215,6 +225,27 @@ api.MapDelete("/sources/{id:guid}", async (Guid id, ProxyPoolService pool,
     CancellationToken cancellationToken) =>
     await pool.DeleteSourceAsync(id, cancellationToken) ? Results.NoContent() : Results.NotFound());
 
+api.MapGet("/settings/profile", (ProxyPoolProfileManager profileManager) =>
+    Results.Ok(profileManager.GetSummary()));
+
+api.MapPut("/settings/profile", (ProfileUpdateRequest request, ProxyPoolProfileManager profileManager,
+    MaintenanceOperationQueue queue) =>
+{
+    if (string.IsNullOrWhiteSpace(request.Profile))
+    {
+        return Results.BadRequest(new { message = "profile is required." });
+    }
+
+    if (queue.GetState().Active is not null)
+    {
+        return Results.Conflict(new { message = "Wait for the active maintenance operation to finish before switching profile." });
+    }
+
+    return profileManager.TrySwitch(request.Profile, out var profile, out var error)
+        ? Results.Ok(profile)
+        : Results.BadRequest(new { message = error });
+});
+
 api.MapGet("/operations/{id:guid}", (Guid id, MaintenanceOperationQueue queue) =>
 {
     var operation = queue.GetOperation(id);
@@ -283,6 +314,53 @@ static void ValidateEnum<TEnum>(string? value, string parameterName) where TEnum
     {
         throw new ArgumentException($"{parameterName} is invalid.");
     }
+}
+
+static string ResolveProfile(IConfiguration configuration, string contentRootPath)
+{
+    var processProfile = Environment.GetEnvironmentVariable("PROXYSIU_PROFILE");
+    if (!string.IsNullOrWhiteSpace(processProfile))
+    {
+        return processProfile.Trim();
+    }
+
+    var configuredProfile = configuration[$"{ProxyPoolOptions.SectionName}:Profile"];
+    if (!string.IsNullOrWhiteSpace(configuredProfile))
+    {
+        return configuredProfile.Trim();
+    }
+
+    var dotenvPath = Path.Combine(contentRootPath, ".env");
+    if (!File.Exists(dotenvPath))
+    {
+        return "high-throughput";
+    }
+
+    foreach (var rawLine in File.ReadLines(dotenvPath))
+    {
+        var line = rawLine.Trim();
+        if (line.Length == 0 || line.StartsWith('#'))
+        {
+            continue;
+        }
+
+        var separator = line.IndexOf('=');
+        if (separator <= 0)
+        {
+            continue;
+        }
+
+        var key = line[..separator].Trim();
+        if (!key.Equals("PROXYSIU_PROFILE", StringComparison.OrdinalIgnoreCase) &&
+            !key.Equals("ProxyPool__Profile", StringComparison.OrdinalIgnoreCase))
+        {
+            continue;
+        }
+
+        return line[(separator + 1)..].Trim().Trim('"', '\'');
+    }
+
+    return "high-throughput";
 }
 
 public partial class Program;

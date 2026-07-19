@@ -10,3 +10,4 @@ src/ProxySiu.Api/data/
 .vscode/
 npm-debug.log*
 .env
+*.mmdb

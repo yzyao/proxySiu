@@ -180,6 +180,18 @@ curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
 
 维护请求会立即返回 `202 Accepted`。同一时间最多存在一个排队或运行中的维护任务。
 
+## IP 归属地
+
+归属地依据代理检测成功后得到的出口 IP 查询，显示国家、地区和城市；它不是精确街道地址。查询使用本地 MaxMind GeoLite2 City 数据库，不会为每个代理额外请求第三方 API。
+
+1. 注册并下载 [GeoLite2 City](https://dev.maxmind.com/geoip/geolite2-free-geolocation-data) 的 `GeoLite2-City.mmdb`。
+2. VPS 部署时，将文件放入项目根目录的 `geoip/GeoLite2-City.mmdb`。
+3. 重建并启动容器：`docker compose up -d --build`。
+
+Compose 会将该目录以只读方式挂载到 API 容器。缺少数据库文件时，检测和代理池仍正常运行，只是不显示归属地；补上文件后重启即可。已有记录会在下次成功检测时补全归属地。
+
+本地开发默认从 `src/ProxySiu.Api/data/GeoLite2-City.mmdb` 读取；也可在 `.env` 设置 `PROXYSIU_GEOIP_DATABASE_PATH` 指向任意本地 `.mmdb` 文件。
+
 ## 验证
 
 ```powershell

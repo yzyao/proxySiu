@@ -30,8 +30,11 @@ builder.Services.AddSingleton<IValidateOptions<ProxyAuthOptions>>(serviceProvide
 builder.Services.AddOptions<ProxyAuthOptions>()
     .Bind(builder.Configuration.GetSection(ProxyAuthOptions.SectionName))
     .ValidateOnStart();
+builder.Services.AddOptions<GeoIpOptions>()
+    .Bind(builder.Configuration.GetSection(GeoIpOptions.SectionName));
 builder.Services.AddDataProtection();
 builder.Services.AddSingleton<ProxySessionService>();
+builder.Services.AddSingleton<GeoIpService>();
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
     options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
@@ -457,6 +460,9 @@ static IReadOnlyDictionary<string, string?> LoadDotEnvConfiguration(string conte
                 break;
             case "PROXYSIU_REMOVE_UNSEEN_AFTER_HOURS":
                 configuration["ProxyPool:RemoveUnseenAfterHours"] = value;
+                break;
+            case "PROXYSIU_GEOIP_DATABASE_PATH":
+                configuration["GeoIp:DatabasePath"] = value;
                 break;
         }
     }

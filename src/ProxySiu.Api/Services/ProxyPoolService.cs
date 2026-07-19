@@ -17,6 +17,7 @@ public sealed class ProxyPoolService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ProxyPoolProfileManager _profileManager;
     private readonly ILogger<ProxyPoolService> _logger;
+    private readonly GeoIpService? _geoIp;
     private int _isScanning;
     private int _isChecking;
     private int _isPruning;
@@ -40,7 +41,8 @@ public sealed class ProxyPoolService
         ProxyChecker checker,
         IHttpClientFactory httpClientFactory,
         ProxyPoolProfileManager profileManager,
-        ILogger<ProxyPoolService> logger)
+        ILogger<ProxyPoolService> logger,
+        GeoIpService? geoIp = null)
     {
         _store = store;
         _parser = parser;
@@ -48,6 +50,7 @@ public sealed class ProxyPoolService
         _httpClientFactory = httpClientFactory;
         _profileManager = profileManager;
         _logger = logger;
+        _geoIp = geoIp;
     }
 
     public void SetNextCheckAt(DateTimeOffset value) =>
@@ -826,6 +829,10 @@ public sealed class ProxyPoolService
         proxy.LastCheckedAt = result.CheckedAt;
         proxy.LatencyMs = result.LatencyMs;
         proxy.ExitIp = result.ExitIp;
+        if (result.IsAlive && _geoIp?.Lookup(result.ExitIp) is { } location)
+        {
+            proxy.GeoLocation = location;
+        }
         proxy.LastError = result.Error;
         if (result.IsAlive)
         {
@@ -861,6 +868,7 @@ public sealed class ProxyPoolService
         LastAliveAt = proxy.LastAliveAt,
         LatencyMs = proxy.LatencyMs,
         ExitIp = proxy.ExitIp,
+        GeoLocation = proxy.GeoLocation,
         SuccessCount = proxy.SuccessCount,
         FailureCount = proxy.FailureCount,
         ConsecutiveFailures = proxy.ConsecutiveFailures,
@@ -896,6 +904,7 @@ public sealed class ProxyPoolService
         proxy.LastAliveAt,
         proxy.LatencyMs,
         proxy.ExitIp,
+        proxy.GeoLocation,
         proxy.SuccessCount,
         proxy.FailureCount,
         proxy.ConsecutiveFailures,

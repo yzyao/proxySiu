@@ -41,6 +41,7 @@ public sealed class ProxyRecord
     public DateTimeOffset? LastAliveAt { get; set; }
     public long? LatencyMs { get; set; }
     public string? ExitIp { get; set; }
+    public IpGeoLocation? GeoLocation { get; set; }
     public int SuccessCount { get; set; }
     public int FailureCount { get; set; }
     public int ConsecutiveFailures { get; set; }
@@ -49,6 +50,17 @@ public sealed class ProxyRecord
 
     [JsonIgnore]
     public string Key => $"{Protocol}:{Host.ToLowerInvariant()}:{Port}";
+}
+
+public sealed record IpGeoLocation(
+    string? CountryCode,
+    string? CountryName,
+    string? RegionCode,
+    string? RegionName,
+    string? CityName)
+{
+    public bool HasValue => !string.IsNullOrWhiteSpace(CountryCode) || !string.IsNullOrWhiteSpace(CountryName) ||
+                            !string.IsNullOrWhiteSpace(RegionName) || !string.IsNullOrWhiteSpace(CityName);
 }
 
 public sealed class ProxyQuarantine

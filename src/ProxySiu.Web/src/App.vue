@@ -362,6 +362,13 @@ function protocolLabel(protocol) {
   return { http: 'HTTP', socks4: 'SOCKS4', socks5: 'SOCKS5' }[protocol] || protocol
 }
 
+function geoLabel(location) {
+  if (!location) return ''
+  const parts = [location.countryName || location.countryCode, location.regionName, location.cityName]
+    .filter(Boolean)
+  return parts.length ? parts.join(' · ') : '归属地未知'
+}
+
 function statusMeta(status) {
   return {
     alive: ['可用', 'success'],
@@ -586,7 +593,7 @@ function successRate(row) {
             @sort-change="sortProxies"
           >
             <el-table-column prop="address" label="代理地址" min-width="190">
-              <template #default="{ row }"><div class="address-cell"><strong>{{ row.host }}:{{ row.port }}</strong><span>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</span></div></template>
+              <template #default="{ row }"><div class="address-cell"><strong>{{ row.host }}:{{ row.port }}</strong><span>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</span><small v-if="row.geoLocation">{{ geoLabel(row.geoLocation) }}</small></div></template>
             </el-table-column>
             <el-table-column prop="protocol" label="协议" width="115"><template #default="{ row }"><span class="protocol-chip">{{ protocolLabel(row.protocol) }}</span></template></el-table-column>
             <el-table-column prop="status" label="状态" width="115" sortable="custom"><template #default="{ row }"><el-tag :type="statusMeta(row.status)[1]" effect="light" round>{{ statusMeta(row.status)[0] }}</el-tag></template></el-table-column>

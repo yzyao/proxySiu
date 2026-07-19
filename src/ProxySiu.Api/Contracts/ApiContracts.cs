@@ -57,6 +57,7 @@ public sealed record ProxyDto(
     DateTimeOffset? LastAliveAt,
     long? LatencyMs,
     string? ExitIp,
+    IpGeoLocation? GeoLocation,
     int SuccessCount,
     int FailureCount,
     int ConsecutiveFailures,

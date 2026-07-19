@@ -1,0 +1,9 @@
+namespace ProxySiu.Api.Options;
+
+public sealed class GeoIpOptions
+{
+    public const string SectionName = "GeoIp";
+
+    public bool Enabled { get; set; } = true;
+    public string DatabasePath { get; set; } = "data/GeoLite2-City.mmdb";
+}

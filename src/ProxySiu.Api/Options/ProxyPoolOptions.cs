@@ -34,6 +34,7 @@ public sealed class ProxyPoolOptions
     public int RemoveDeadAfterHours { get; set; } = 24;
     public bool ScanOnStartup { get; set; } = true;
     public bool AllowRemoteAccess { get; set; }
+    public bool AllowInternalNetworkAccess { get; set; }
     public bool AllowPrivateNetworks { get; set; }
     public List<ProxySourceSeed> Sources { get; set; } = [];
 }

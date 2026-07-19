@@ -70,6 +70,21 @@ npm run dev
 
 后端 API 运行在 <http://127.0.0.1:5080>，例如 `/api/health`。管理界面独立运行：在 `src/ProxySiu.Web` 执行 `npm run dev` 后访问 <http://localhost:5173>；Vite 会把 `/api` 转发到 5080。`npm run build` 仅生成 `src/ProxySiu.Web/dist`，不会再写入 API 项目。
 
+## Docker Compose
+
+Compose 使用两个容器：`web` 通过 Nginx 提供管理页面并反向代理 `/api`，`api` 只加入内部 Docker 网络且不发布宿主机端口。浏览器仅可从本机访问 Web 容器的 <http://127.0.0.1:5173>。
+
+```powershell
+# 可选：在 .env 中选择 idc-safe 或 high-throughput
+Copy-Item .env.example .env
+
+docker compose up --build -d
+docker compose logs -f
+docker compose down
+```
+
+代理池数据保存在命名卷 `proxy-data`，执行 `docker compose down` 不会删除它；如需删除运行数据，执行 `docker compose down -v`。
+
 首次启动默认会在后台采集六个内置列表，并分批检测候选代理。默认 `high-throughput` 档使用并发 36、每批 400、5–15 分钟随机调度；`idc-safe` 档使用并发 10、每批 100、15–30 分钟随机调度。可通过 Web 下拉框热切，或通过 `.env` 的 `PROXYSIU_PROFILE` 设置启动档。所有档位参数和默认采集源均可在 `appsettings.json` 的 `ProxyPool` 节点修改。
 
 ## 常用 API

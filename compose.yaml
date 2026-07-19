@@ -1,0 +1,31 @@
+services:
+  api:
+    build:
+      context: ./src/ProxySiu.Api
+    environment:
+      ASPNETCORE_URLS: http://0.0.0.0:5080
+      ProxyPool__AllowInternalNetworkAccess: "true"
+      PROXYSIU_PROFILE: ${PROXYSIU_PROFILE:-idc-safe}
+    volumes:
+      - proxy-data:/app/data
+    restart: unless-stopped
+    networks:
+      - internal
+
+  web:
+    build:
+      context: ./src/ProxySiu.Web
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:5173:80"
+    restart: unless-stopped
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  proxy-data:

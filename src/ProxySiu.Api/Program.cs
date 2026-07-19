@@ -61,7 +61,8 @@ var app = builder.Build();
 app.Use(async (context, next) =>
 {
     var remoteAddress = context.Connection.RemoteIpAddress;
-    if (remoteAddress is not null && !IPAddress.IsLoopback(remoteAddress))
+    var options = context.RequestServices.GetRequiredService<ProxyPoolProfileManager>().Current;
+    if (remoteAddress is not null && !IPAddress.IsLoopback(remoteAddress) && !options.AllowInternalNetworkAccess)
     {
         context.Response.StatusCode = StatusCodes.Status403Forbidden;
         await context.Response.WriteAsJsonAsync(new

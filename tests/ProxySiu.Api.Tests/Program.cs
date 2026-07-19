@@ -20,6 +20,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("access token issues a protected browser session and read key", AccessTokenAuthAsync),
     ("check planner isolates bootstrap and reserves steady-state quotas", CheckPlannerAsync),
     ("pool retention caps growth and removes stale unseen records", PoolRetentionAsync),
+    ("new candidates use pending slots without displacing recovery dead records", PartitionedAdmissionAsync),
     ("alive country dictionary and country proxy selection stay scoped to live proxies", CountrySelectionAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
     ("json store preserves a recoverable backup", JsonStoreBackupAsync)
@@ -111,14 +112,17 @@ static Task OptionsValidatorAsync()
                 CheckIntervalMaxMinutes = 30,
                 AliveChecksPerCycle = 50,
                 PendingChecksPerCycle = 40,
-                DeadChecksPerCycle = 10
+                DeadChecksPerCycle = 10,
+                PendingAdmissionCapacity = 400,
+                DeadRetentionCapacity = 80
             }
         }
     };
     ProxyPoolProfileSelector.Apply(profiled, "IDC-SAFE");
     Assert(profiled.Profile == "IDC-SAFE" && profiled.CheckConcurrency == 10 &&
            profiled.MaxChecksPerCycle == 100 && profiled.CheckIntervalMinMinutes == 15 &&
-           profiled.CheckIntervalMaxMinutes == 30,
+           profiled.CheckIntervalMaxMinutes == 30 && profiled.PendingAdmissionCapacity == 400 &&
+           profiled.DeadRetentionCapacity == 80,
         "Profile selection must override the runtime check rate.");
     return Task.CompletedTask;
 }
@@ -229,7 +233,9 @@ static async Task PoolRetentionAsync()
         var options = Options.Create(new ProxyPoolOptions
         {
             DataFile = file,
-            MaxPoolSize = 3,
+            MaxPoolSize = 4,
+            PendingAdmissionCapacity = 2,
+            DeadRetentionCapacity = 1,
             RemoveUnseenAfterHours = 12,
             RemoveDeadAfterHours = 24 * 365,
             MaxConsecutiveFailures = 3
@@ -244,15 +250,17 @@ static async Task PoolRetentionAsync()
 
         var now = DateTimeOffset.UtcNow;
         var healthy = AliveProxy("1.1.1.1", 1001, now);
-        var mostFailed = DeadProxy("2.2.2.2", 1002, now);
+        var recovering = DeadProxy("2.2.2.2", 1002, now);
+        recovering.LastAliveAt = now.AddHours(-1);
+        recovering.ConsecutiveFailures = 1;
+        var mostFailed = DeadProxy("3.3.3.3", 1003, now);
         mostFailed.ConsecutiveFailures = 8;
-        var olderDead = DeadProxy("3.3.3.3", 1003, now.AddHours(-2));
-        olderDead.ConsecutiveFailures = 1;
-        var pendingOne = NewProxy("4.4.4.4", 1004);
-        var pendingTwo = NewProxy("5.5.5.5", 1005);
+        var neverAlive = DeadProxy("4.4.4.4", 1004, now.AddHours(-2));
+        neverAlive.ConsecutiveFailures = 1;
+        var pendingOne = NewProxy("5.5.5.5", 1005);
         await store.WriteAsync(state =>
         {
-            state.Proxies.AddRange([healthy, mostFailed, olderDead, pendingOne, pendingTwo]);
+            state.Proxies.AddRange([healthy, recovering, mostFailed, neverAlive, pendingOne]);
             return 0;
         });
 
@@ -260,8 +268,10 @@ static async Task PoolRetentionAsync()
         var capped = await store.ReadAsync(state => state.Proxies.ToList());
         Assert(capped.Count == 3, "The retention limit must cap the pool.");
         Assert(capped.Any(proxy => proxy.Id == healthy.Id), "A live proxy must be retained before dead proxies.");
-        Assert(capped.All(proxy => proxy.Id != mostFailed.Id && proxy.Id != olderDead.Id),
-            "Dead proxies with more failures or older sightings must be evicted first.");
+        Assert(capped.Any(proxy => proxy.Id == recovering.Id),
+            "A proxy that was recently alive must retain a recovery retry slot.");
+        Assert(capped.All(proxy => proxy.Id != mostFailed.Id && proxy.Id != neverAlive.Id),
+            "Repeatedly failing or never-alive dead proxies must be evicted first.");
 
         var stalePending = NewProxy("6.6.6.6", 1006);
         stalePending.LastSeenAt = now.AddHours(-13);
@@ -278,6 +288,63 @@ static async Task PoolRetentionAsync()
         var retained = await store.ReadAsync(state => state.Proxies.ToList());
         Assert(retained.Count == 1 && retained[0].Id == healthy.Id,
             "Unseen dead and pending records must be pruned before the normal dead-record timeout.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+}
+
+static async Task PartitionedAdmissionAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var options = Options.Create(new ProxyPoolOptions
+        {
+            DataFile = file,
+            MaxPoolSize = 6,
+            PendingAdmissionCapacity = 2,
+            DeadRetentionCapacity = 1,
+            MaxCandidatesPerSource = 10
+        });
+        var environment = new TestHostEnvironment(directory);
+        var store = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
+        var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
+        var pool = new ProxyPoolService(store, new ProxyListParser(options),
+            new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance),
+            new StaticHttpClientFactory("9.9.9.1:8080\n9.9.9.2:8080"), profileManager,
+            NullLogger<ProxyPoolService>.Instance);
+        await store.InitializeAsync();
+
+        var recovering = DeadProxy("1.1.1.1", 8080, DateTimeOffset.UtcNow);
+        recovering.LastAliveAt = DateTimeOffset.UtcNow.AddMinutes(-10);
+        recovering.ConsecutiveFailures = 1;
+        var neverAlive = DeadProxy("2.2.2.2", 8080, DateTimeOffset.UtcNow);
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.AddRange([recovering, neverAlive]);
+            state.Sources.Add(new ProxySource
+            {
+                Name = "test",
+                Url = "https://8.8.8.8/proxies.txt",
+                Protocol = ProxyProtocol.Http
+            });
+            return 0;
+        });
+
+        var scan = await pool.ScanAsync(CancellationToken.None);
+        var stateAfterScan = await store.ReadAsync(state => state.Proxies.ToList());
+        Assert(scan.Added == 2, "Free pending admission slots must accept new candidates.");
+        Assert(stateAfterScan.Any(proxy => proxy.Id == recovering.Id),
+            "New candidates must not displace a recovery dead proxy.");
+        Assert(stateAfterScan.Count(proxy => proxy.Status == ProxyStatus.Pending) == 2,
+            "New candidates must be constrained by the pending admission capacity.");
     }
     finally
     {
@@ -436,4 +503,15 @@ sealed class TestHostEnvironment(string contentRootPath) : IHostEnvironment
 sealed class TestHttpClientFactory : IHttpClientFactory
 {
     public HttpClient CreateClient(string name) => new();
+}
+
+sealed class StaticHttpClientFactory(string content) : IHttpClientFactory
+{
+    public HttpClient CreateClient(string name) => new(new StaticHttpHandler(content));
+}
+
+sealed class StaticHttpHandler(string content) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+        Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(content) });
 }

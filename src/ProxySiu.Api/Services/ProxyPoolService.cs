@@ -378,12 +378,17 @@ public sealed class ProxyPoolService
             var now = DateTimeOffset.UtcNow;
             var summary = await _store.WriteAsync(state =>
             {
-                var existing = state.Proxies.ToDictionary(proxy => proxy.Key, StringComparer.OrdinalIgnoreCase);
                 state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
+                var partitionEvictions = SelectRetentionEvictions(state.Proxies, Options);
+                RemoveWithQuarantine(state, partitionEvictions, now, Options);
+                var existing = state.Proxies.ToDictionary(proxy => proxy.Key, StringComparer.OrdinalIgnoreCase);
                 var quarantined = state.Quarantines.ToDictionary(quarantine => quarantine.Key,
                     StringComparer.OrdinalIgnoreCase);
                 var added = 0;
                 var updated = 0;
+                var deferred = 0;
+                var pendingCount = state.Proxies.Count(proxy => proxy.Status == ProxyStatus.Pending);
+                var pendingCapacity = Math.Clamp(Options.PendingAdmissionCapacity, 1, Options.MaxPoolSize);
                 foreach (var result in results)
                 {
                     var source = state.Sources.FirstOrDefault(item => item.Id == result.SourceId);
@@ -419,6 +424,12 @@ public sealed class ProxyPoolService
                             continue;
                         }
 
+                        if (pendingCount >= pendingCapacity || state.Proxies.Count >= Options.MaxPoolSize)
+                        {
+                            deferred++;
+                            continue;
+                        }
+
                         proxy = new ProxyRecord
                         {
                             Host = candidate.Host,
@@ -431,15 +442,17 @@ public sealed class ProxyPoolService
                         state.Proxies.Add(proxy);
                         existing[key] = proxy;
                         added++;
+                        pendingCount++;
                     }
                 }
 
-                var evicted = SelectCapacityEvictions(state.Proxies, Options.MaxPoolSize);
-                RemoveWithQuarantine(state, evicted, now, Options);
+                var hardCapacityEvictions = SelectCapacityEvictions(state.Proxies, Options.MaxPoolSize);
+                RemoveWithQuarantine(state, hardCapacityEvictions, now, Options);
                 var failed = results.Count(result => result.Error is not null);
                 return new PoolOperationResult(false,
-                    $"采集完成：新增 {added}，刷新 {updated}，失败源 {failed}。",
-                    results.Sum(result => result.Candidates.Count), added, updated, evicted.Count, failed);
+                    $"采集完成：新增 {added}，刷新 {updated}，延后 {deferred}，容量清理 {partitionEvictions.Count + hardCapacityEvictions.Count}，失败源 {failed}。",
+                    results.Sum(result => result.Candidates.Count), added, updated,
+                    partitionEvictions.Count + hardCapacityEvictions.Count, failed);
             }, cancellationToken);
             _lastScanAt = now;
             return SetMessage(summary);
@@ -576,6 +589,10 @@ public sealed class ProxyPoolService
                      ((proxy.Status is ProxyStatus.Dead or ProxyStatus.Pending) && proxy.LastSeenAt < unseenCutoff)))
                     .ToList();
                 var removedIds = toRemove.Select(proxy => proxy.Id).ToHashSet();
+                var retentionEvictions = SelectRetentionEvictions(
+                    state.Proxies.Where(proxy => !removedIds.Contains(proxy.Id)), Options);
+                toRemove.AddRange(retentionEvictions);
+                removedIds.UnionWith(retentionEvictions.Select(proxy => proxy.Id));
                 var capacityEvictions = SelectCapacityEvictions(
                     state.Proxies.Where(proxy => !removedIds.Contains(proxy.Id)), Options.MaxPoolSize);
                 toRemove.AddRange(capacityEvictions);
@@ -669,6 +686,43 @@ public sealed class ProxyPoolService
         return Encoding.UTF8.GetString(target.ToArray());
     }
 
+    private static List<ProxyRecord> SelectRetentionEvictions(IEnumerable<ProxyRecord> records,
+        ProxyPoolOptions options)
+    {
+        var items = records.Where(proxy => !proxy.IsPinned).ToList();
+        var deadCapacity = Math.Clamp(options.DeadRetentionCapacity, 1, options.MaxPoolSize);
+        var failureLimit = Math.Max(1, options.MaxConsecutiveFailures);
+        var deadExcess = Math.Max(0, items.Count(proxy => proxy.Status == ProxyStatus.Dead) - deadCapacity);
+        var deadEvictions = items.Where(proxy => proxy.Status == ProxyStatus.Dead)
+            .OrderBy(proxy => DeadRetentionPriority(proxy, failureLimit))
+            .ThenByDescending(proxy => proxy.ConsecutiveFailures)
+            .ThenBy(proxy => proxy.LastAliveAt ?? DateTimeOffset.MinValue)
+            .ThenBy(proxy => proxy.LastCheckedAt ?? proxy.FirstSeenAt)
+            .ThenBy(proxy => proxy.FirstSeenAt)
+            .Take(deadExcess)
+            .ToList();
+        var removedIds = deadEvictions.Select(proxy => proxy.Id).ToHashSet();
+        var pendingCapacity = Math.Clamp(options.PendingAdmissionCapacity, 1, options.MaxPoolSize);
+        var pendingExcess = Math.Max(0, items.Count(proxy => proxy.Status == ProxyStatus.Pending) - pendingCapacity);
+        var pendingEvictions = items.Where(proxy => proxy.Status == ProxyStatus.Pending && !removedIds.Contains(proxy.Id))
+            .OrderBy(proxy => proxy.FirstSeenAt)
+            .ThenBy(proxy => proxy.LastSeenAt)
+            .Take(pendingExcess)
+            .ToList();
+        deadEvictions.AddRange(pendingEvictions);
+        return deadEvictions;
+    }
+
+    private static int DeadRetentionPriority(ProxyRecord proxy, int failureLimit)
+    {
+        if (proxy.ConsecutiveFailures >= failureLimit)
+        {
+            return 0;
+        }
+
+        return proxy.LastAliveAt is null ? 1 : 2;
+    }
+
     private static List<ProxyRecord> SelectCapacityEvictions(IEnumerable<ProxyRecord> records, int maxPoolSize)
     {
         var items = records.ToList();
@@ -689,8 +743,8 @@ public sealed class ProxyPoolService
 
     private static int EvictionPriority(ProxyRecord proxy) => proxy.Status switch
     {
-        ProxyStatus.Dead => 0,
-        ProxyStatus.Pending => 1,
+        ProxyStatus.Pending => 0,
+        ProxyStatus.Dead => 1,
         _ => 2
     };
 

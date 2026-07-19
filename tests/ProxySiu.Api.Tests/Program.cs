@@ -134,6 +134,12 @@ static async Task JsonStoreBackupAsync()
         await recoveredStore.InitializeAsync();
         var recoveredCount = await recoveredStore.ReadAsync(state => state.Proxies.Count);
         Assert(recoveredCount == 1, "Corrupt primary data must recover the previous valid backup.");
+
+        await File.WriteAllTextAsync(file, "{");
+        var recoveredAgainStore = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
+        await recoveredAgainStore.InitializeAsync();
+        var recoveredAgainCount = await recoveredAgainStore.ReadAsync(state => state.Proxies.Count);
+        Assert(recoveredAgainCount == 1, "Recovery must preserve a valid backup for a later failure.");
     }
     finally
     {

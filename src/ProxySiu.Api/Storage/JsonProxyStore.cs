@@ -49,6 +49,7 @@ public sealed class JsonProxyStore
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
             var loadedExistingState = false;
             var recoveredFromBackup = false;
+            var primaryWasCorrupt = false;
             if (File.Exists(_filePath))
             {
                 try
@@ -58,6 +59,7 @@ public sealed class JsonProxyStore
                 }
                 catch (Exception exception) when (exception is JsonException or IOException)
                 {
+                    primaryWasCorrupt = true;
                     var corruptPath = $"{_filePath}.corrupt-{DateTimeOffset.UtcNow:yyyyMMddHHmmss}";
                     File.Copy(_filePath, corruptPath, true);
                     _logger.LogError(exception, "Proxy pool data is corrupt; copied it to {CorruptPath}", corruptPath);
@@ -88,6 +90,10 @@ public sealed class JsonProxyStore
             _initialized = true;
             if (!File.Exists(_filePath) || changed || recoveredFromBackup)
             {
+                if (primaryWasCorrupt)
+                {
+                    File.Delete(_filePath);
+                }
                 await SaveUnsafeAsync(cancellationToken);
             }
         }

@@ -168,10 +168,24 @@ curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
   'https://proxy.example.com/api/proxy/plain?protocol=socks5'
 ```
 
+按国家提取前，先读取当前可用国家字典；国家参数使用两位 ISO 代码，例如 `US`、`CN`：
+
+```bash
+curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/countries'
+
+curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/random?protocol=http&country=US'
+
+curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/plain?country=CN'
+```
+
 | 方法 | 路径 | 权限 | 用途 |
 | --- | --- | --- | --- |
-| GET | `/api/proxy/random?protocol=http` | Token 或浏览器会话 | 随机返回一个可用代理 |
-| GET | `/api/proxy/plain?protocol=socks5` | Token 或浏览器会话 | 文本导出可用代理 |
+| GET | `/api/proxy/countries?protocol=http` | Token 或浏览器会话 | 当前可用代理的国家字典与数量 |
+| GET | `/api/proxy/random?protocol=http&country=US` | Token 或浏览器会话 | 按国家随机返回一个可用代理 |
+| GET | `/api/proxy/plain?protocol=socks5&country=CN` | Token 或浏览器会话 | 按国家文本导出可用代理 |
 | GET | `/api/dashboard` | 浏览器会话 | 池统计与任务状态 |
 | GET / POST / PUT / DELETE | `/api/proxies` | 浏览器会话 | 查询和管理代理 |
 | GET / POST / PUT / DELETE | `/api/sources` | 浏览器会话 | 管理采集源 |

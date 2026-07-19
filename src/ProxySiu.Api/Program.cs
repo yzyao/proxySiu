@@ -120,7 +120,8 @@ app.Use(async (context, next) =>
     var path = context.Request.Path;
     var isAnonymousEndpoint = path.Equals("/api/auth/login") || path.Equals("/api/auth/session") ||
                               path.Equals("/api/health") || HttpMethods.IsOptions(context.Request.Method);
-    var isApiKeyEndpoint = path.Equals("/api/proxy/random") || path.Equals("/api/proxy/plain");
+    var isApiKeyEndpoint = path.Equals("/api/proxy/random") || path.Equals("/api/proxy/plain") ||
+                           path.Equals("/api/proxy/countries");
     var sessions = context.RequestServices.GetRequiredService<ProxySessionService>();
     if (path.StartsWithSegments("/api") && !isAnonymousEndpoint &&
         !(isApiKeyEndpoint && sessions.TryAuthenticateApiKey(context.Request)) &&
@@ -223,13 +224,28 @@ api.MapPost("/proxies/{id:guid}/check", async (Guid id, ProxyPoolService pool,
     return proxy is null ? Results.NotFound(new { message = "Proxy does not exist." }) : Results.Ok(proxy);
 });
 
-api.MapGet("/proxy/random", async (string? protocol, ProxyPoolService pool,
+api.MapGet("/proxy/countries", async (string? protocol, ProxyPoolService pool,
     CancellationToken cancellationToken) =>
 {
     try
     {
         ValidateProtocol(protocol);
-        var proxy = await pool.GetRandomAliveProxyAsync(protocol, cancellationToken);
+        return Results.Ok(await pool.GetAliveCountriesAsync(protocol, cancellationToken));
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(new { message = exception.Message });
+    }
+});
+
+api.MapGet("/proxy/random", async (string? protocol, string? country, ProxyPoolService pool,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        ValidateProtocol(protocol);
+        ValidateCountry(country);
+        var proxy = await pool.GetRandomAliveProxyAsync(protocol, country, cancellationToken);
         return proxy is null
             ? Results.NotFound(new { message = "No matching live proxy is currently available." })
             : Results.Ok(proxy);
@@ -240,13 +256,14 @@ api.MapGet("/proxy/random", async (string? protocol, ProxyPoolService pool,
     }
 });
 
-api.MapGet("/proxy/plain", async (string? protocol, ProxyPoolService pool,
+api.MapGet("/proxy/plain", async (string? protocol, string? country, ProxyPoolService pool,
     CancellationToken cancellationToken) =>
 {
     try
     {
         ValidateProtocol(protocol);
-        return Results.Text(await pool.ExportAliveAsync(protocol, cancellationToken), "text/plain; charset=utf-8");
+        ValidateCountry(country);
+        return Results.Text(await pool.ExportAliveAsync(protocol, country, cancellationToken), "text/plain; charset=utf-8");
     }
     catch (ArgumentException exception)
     {
@@ -369,6 +386,15 @@ static void ValidateProxyQuery(ProxyQuery query)
 }
 
 static void ValidateProtocol(string? value) => ValidateEnum<ProxyProtocol>(value, "protocol");
+
+static void ValidateCountry(string? value)
+{
+    if (!string.IsNullOrWhiteSpace(value) &&
+        (value.Trim().Length != 2 || !value.Trim().All(char.IsAsciiLetter)))
+    {
+        throw new ArgumentException("country must be a two-letter ISO country code.");
+    }
+}
 
 static void ValidateEnum<TEnum>(string? value, string parameterName) where TEnum : struct, Enum
 {

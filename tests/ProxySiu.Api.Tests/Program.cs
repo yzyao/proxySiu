@@ -20,6 +20,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("access token issues a protected browser session and read key", AccessTokenAuthAsync),
     ("check planner isolates bootstrap and reserves steady-state quotas", CheckPlannerAsync),
     ("pool retention caps growth and removes stale unseen records", PoolRetentionAsync),
+    ("alive country dictionary and country proxy selection stay scoped to live proxies", CountrySelectionAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
     ("json store preserves a recoverable backup", JsonStoreBackupAsync)
 };
@@ -277,6 +278,51 @@ static async Task PoolRetentionAsync()
         var retained = await store.ReadAsync(state => state.Proxies.ToList());
         Assert(retained.Count == 1 && retained[0].Id == healthy.Id,
             "Unseen dead and pending records must be pruned before the normal dead-record timeout.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+}
+
+static async Task CountrySelectionAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var options = Options.Create(new ProxyPoolOptions { DataFile = file });
+        var environment = new TestHostEnvironment(directory);
+        var store = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
+        var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
+        var pool = new ProxyPoolService(store, new ProxyListParser(options),
+            new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance), new TestHttpClientFactory(),
+            profileManager, NullLogger<ProxyPoolService>.Instance);
+        await store.InitializeAsync();
+
+        var us = AliveProxy("1.1.1.1", 8080, DateTimeOffset.UtcNow);
+        us.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
+        var cn = AliveProxy("2.2.2.2", 8080, DateTimeOffset.UtcNow);
+        cn.GeoLocation = new IpGeoLocation("CN", "China", null, null, null);
+        var dead = DeadProxy("3.3.3.3", 8080, DateTimeOffset.UtcNow);
+        dead.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.AddRange([us, cn, dead]);
+            return 0;
+        });
+
+        var countries = await pool.GetAliveCountriesAsync(null, CancellationToken.None);
+        Assert(countries.Count == 2 && countries.Single(country => country.Code == "US").Count == 1,
+            "Country dictionary must include only live proxies.");
+        var selected = await pool.GetRandomAliveProxyAsync("http", "US", CancellationToken.None);
+        Assert(selected?.Id == us.Id, "Country-filtered selection must return the requested live country.");
+        var exported = await pool.ExportAliveAsync(null, "CN", CancellationToken.None);
+        Assert(exported == "2.2.2.2:8080", "Country-filtered export must contain only matching live proxies.");
     }
     finally
     {

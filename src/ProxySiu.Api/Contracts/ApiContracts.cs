@@ -77,6 +77,8 @@ public sealed record SourceDto(
 
 public sealed record ProtocolSummaryDto(ProxyProtocol Protocol, int Total, int Alive, int Dead, int Pending);
 
+public sealed record CountrySummaryDto(string Code, string Name, int Count);
+
 public sealed record CheckQueueStateDto(
     bool IsRunning,
     int Waiting,

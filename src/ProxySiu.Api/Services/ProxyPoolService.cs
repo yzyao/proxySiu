@@ -219,7 +219,27 @@ public sealed class ProxyPoolService
         }, cancellationToken);
     }
 
-    public Task<ProxyDto?> GetRandomAliveProxyAsync(string? protocolValue,
+    public Task<IReadOnlyList<CountrySummaryDto>> GetAliveCountriesAsync(string? protocolValue,
+        CancellationToken cancellationToken) =>
+        _store.ReadAsync<IReadOnlyList<CountrySummaryDto>>(state =>
+        {
+            IEnumerable<ProxyRecord> records = state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Alive &&
+                !string.IsNullOrWhiteSpace(proxy.GeoLocation?.CountryCode));
+            if (TryParseProtocol(protocolValue, out var protocol))
+            {
+                records = records.Where(proxy => proxy.Protocol == protocol);
+            }
+
+            return records.GroupBy(proxy => proxy.GeoLocation!.CountryCode!.ToUpperInvariant())
+                .Select(group => new CountrySummaryDto(group.Key,
+                    group.Select(proxy => proxy.GeoLocation!.CountryName)
+                        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? group.Key,
+                    group.Count()))
+                .OrderBy(country => country.Name)
+                .ToList();
+        }, cancellationToken);
+
+    public Task<ProxyDto?> GetRandomAliveProxyAsync(string? protocolValue, string? countryCode,
         CancellationToken cancellationToken) =>
         _store.ReadAsync(state =>
         {
@@ -227,6 +247,11 @@ public sealed class ProxyPoolService
             if (TryParseProtocol(protocolValue, out var protocol))
             {
                 records = records.Where(proxy => proxy.Protocol == protocol);
+            }
+            if (!string.IsNullOrWhiteSpace(countryCode))
+            {
+                records = records.Where(proxy => string.Equals(proxy.GeoLocation?.CountryCode, countryCode,
+                    StringComparison.OrdinalIgnoreCase));
             }
 
             var candidates = records.OrderBy(proxy => proxy.LatencyMs ?? long.MaxValue).Take(30).ToList();
@@ -239,13 +264,19 @@ public sealed class ProxyPoolService
             return ToDto(selected, state.Sources.ToDictionary(source => source.Id, source => source.Name));
         }, cancellationToken);
 
-    public Task<string> ExportAliveAsync(string? protocolValue, CancellationToken cancellationToken) =>
+    public Task<string> ExportAliveAsync(string? protocolValue, string? countryCode,
+        CancellationToken cancellationToken) =>
         _store.ReadAsync(state =>
         {
             IEnumerable<ProxyRecord> records = state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Alive);
             if (TryParseProtocol(protocolValue, out var protocol))
             {
                 records = records.Where(proxy => proxy.Protocol == protocol);
+            }
+            if (!string.IsNullOrWhiteSpace(countryCode))
+            {
+                records = records.Where(proxy => string.Equals(proxy.GeoLocation?.CountryCode, countryCode,
+                    StringComparison.OrdinalIgnoreCase));
             }
 
             return string.Join(Environment.NewLine, records.OrderBy(proxy => proxy.LatencyMs ?? long.MaxValue)

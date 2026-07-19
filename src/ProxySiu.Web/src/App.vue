@@ -593,10 +593,11 @@ function successRate(row) {
             @sort-change="sortProxies"
           >
             <el-table-column prop="address" label="代理地址" min-width="190">
-              <template #default="{ row }"><div class="address-cell"><strong>{{ row.host }}:{{ row.port }}</strong><span>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</span><small v-if="row.geoLocation">{{ geoLabel(row.geoLocation) }}</small></div></template>
+              <template #default="{ row }"><div class="address-cell"><strong>{{ row.host }}:{{ row.port }}</strong><span>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</span></div></template>
             </el-table-column>
             <el-table-column prop="protocol" label="协议" width="115"><template #default="{ row }"><span class="protocol-chip">{{ protocolLabel(row.protocol) }}</span></template></el-table-column>
             <el-table-column prop="status" label="状态" width="115" sortable="custom"><template #default="{ row }"><el-tag :type="statusMeta(row.status)[1]" effect="light" round>{{ statusMeta(row.status)[0] }}</el-tag></template></el-table-column>
+            <el-table-column label="归属地" min-width="170"><template #default="{ row }"><span v-if="row.status === 'alive'" class="geo-location">{{ geoLabel(row.geoLocation) || (row.exitIp ? '查询中/未知' : '尚无出口信息') }}</span></template></el-table-column>
             <el-table-column prop="latencyMs" label="延迟" width="115" sortable="custom"><template #default="{ row }"><span :class="['latency', { fast: row.latencyMs != null && row.latencyMs < 1000 }]">{{ row.latencyMs != null ? `${row.latencyMs} ms` : '—' }}</span></template></el-table-column>
             <el-table-column prop="successRate" label="成功率" width="110" sortable="custom"><template #default="{ row }">{{ successRate(row) }}</template></el-table-column>
             <el-table-column label="来源" min-width="150"><template #default="{ row }"><span class="source-count">{{ row.sources.length ? row.sources.join('、') : row.isPinned ? '手动固定' : '未知' }}</span></template></el-table-column>

@@ -35,6 +35,11 @@ public sealed class ProfileUpdateRequest
     public string Profile { get; set; } = string.Empty;
 }
 
+public sealed class LoginRequest
+{
+    public string Token { get; set; } = string.Empty;
+}
+
 public sealed record PagedResult<T>(IReadOnlyList<T> Items, int Total, int Page, int PageSize);
 
 public sealed record ProxyDto(

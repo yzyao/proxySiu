@@ -1,9 +1,36 @@
 # ProxySiu
 
-## Local-stability profile
+## Deployment and access token
 
-This build is intentionally loopback-only. `AllowRemoteAccess=true` is rejected at startup; expose a future remote edition only after adding HTTPS, authentication, rate limiting, and audit logging.
-The historical remote-management guidance later in this document is not enabled by this profile.
+The API remains loopback-only for a normal local run. The supplied Docker Compose deployment deliberately exposes only the web container on `127.0.0.1:5173`; put the VPS host Nginx and HTTPS in front of that port. Compose enables the API's internal Docker-network access, but still does not publish an API port to the Internet.
+
+Set one high-entropy token in the ignored `.env` file before starting Compose:
+
+```dotenv
+PROXYSIU_ACCESS_TOKEN=use-a-random-secret-of-at-least-24-characters
+```
+
+The browser first submits this token to `/api/auth/login`. The server then issues an `HttpOnly`, `Secure`, `SameSite=Strict` session cookie, so the token is not stored in JavaScript or `localStorage`. The same token is also the API key for service-to-service proxy reads only:
+
+```bash
+curl -H "Authorization: Bearer $PROXYSIU_ACCESS_TOKEN" \
+  'https://proxy.example.com/api/proxy/random?protocol=http'
+# X-API-Key: $PROXYSIU_ACCESS_TOKEN is supported as an alternative.
+```
+
+The API key cannot call management, source, scan, or settings endpoints; those require the browser session. Token login is enabled by Compose and is deliberately off for a plain local `dotnet run`. If you enable it outside HTTPS, set `ProxyAuth__CookieSecure=false` only for that local development environment.
+
+Host-Nginx example (the Compose port remains private to the host):
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:5173;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
 
 Maintenance actions (`/api/actions/scan`, `/check`, `/refresh`, and `/prune`) now return `202 Accepted` immediately with an operation resource. Poll `/api/operations/{id}` or `/api/dashboard` for queued, running, and completed state. Only one maintenance operation may be queued or running at a time.
 

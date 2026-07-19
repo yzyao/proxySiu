@@ -6,6 +6,9 @@ services:
       ASPNETCORE_URLS: http://0.0.0.0:5080
       ProxyPool__AllowInternalNetworkAccess: "true"
       PROXYSIU_PROFILE: ${PROXYSIU_PROFILE:-idc-safe}
+      ProxyAuth__Enabled: "true"
+      ProxyAuth__AccessToken: ${PROXYSIU_ACCESS_TOKEN:?set PROXYSIU_ACCESS_TOKEN in .env}
+      ProxyAuth__CookieSecure: "true"
     volumes:
       - proxy-data:/app/data
     restart: unless-stopped

@@ -10,6 +10,13 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 1180px; min-height: 100vh; background: #f4f6fa; }
+.login-shell { min-width: 320px; min-height: 100vh; display: grid; place-items: center; padding: 24px; background: linear-gradient(145deg, #0d1525, #1b315f); }
+.login-card { width: min(360px, 100%); padding: 34px; border-radius: 18px; background: #fff; box-shadow: 0 24px 70px #0005; display: flex; flex-direction: column; gap: 16px; text-align: center; }
+.login-card strong { color: #172033; font-size: 25px; }
+.login-card span { color: #8490a4; font-size: 13px; }
+.login-card .el-button { width: 100%; margin-top: 4px; }
+.login-mark { width: 52px; height: 52px; margin: 0 auto 2px; border-radius: 15px; display: grid; place-items: center; color: #fff; background: linear-gradient(145deg, #558bff, #285bdd); }
+.login-mark svg { width: 29px; }
 button, input { font: inherit; }
 .app-shell { min-height: 100vh; display: flex; }
 .sidebar { position: fixed; inset: 0 auto 0 0; width: 244px; padding: 28px 20px; background: linear-gradient(180deg, #0d1525 0%, #10192b 60%, #0c1422 100%); color: #fff; display: flex; flex-direction: column; z-index: 10; }

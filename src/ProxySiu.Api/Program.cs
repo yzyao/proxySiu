@@ -2,6 +2,7 @@ using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.Extensions.Options;
 using ProxySiu.Api.Contracts;
 using ProxySiu.Api.Models;
@@ -21,6 +22,20 @@ builder.Services.AddOptions<ProxyPoolOptions>()
 builder.Services.PostConfigure<ProxyPoolOptions>(options => ProxyPoolProfileSelector.Apply(options, selectedProfile));
 builder.Services.AddSingleton(serviceProvider => new ProxyPoolProfileManager(builder.Configuration,
     serviceProvider.GetRequiredService<ProxyPoolOptionsValidator>(), selectedProfile));
+builder.Services.AddSingleton<ProxyAuthOptionsValidator>();
+builder.Services.AddSingleton<IValidateOptions<ProxyAuthOptions>>(serviceProvider =>
+    serviceProvider.GetRequiredService<ProxyAuthOptionsValidator>());
+builder.Services.AddOptions<ProxyAuthOptions>()
+    .Bind(builder.Configuration.GetSection(ProxyAuthOptions.SectionName))
+    .ValidateOnStart();
+builder.Services.AddDataProtection();
+builder.Services.AddSingleton<ProxySessionService>();
+builder.Services.Configure<ForwardedHeadersOptions>(options =>
+{
+    options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+    options.KnownIPNetworks.Clear();
+    options.KnownProxies.Clear();
+});
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
     options.SerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
@@ -33,7 +48,8 @@ builder.Services.AddCors(options =>
         .WithOrigins(builder.Configuration.GetSection("CorsOrigins").Get<string[]>() ??
                      ["http://localhost:5173", "http://127.0.0.1:5173"])
         .AllowAnyHeader()
-        .AllowAnyMethod());
+        .AllowAnyMethod()
+        .AllowCredentials());
 });
 
 builder.Services.AddHttpClient("proxy-sources", client =>
@@ -57,6 +73,8 @@ builder.Services.AddHostedService<MaintenanceOperationWorker>();
 builder.Services.AddHostedService<ProxyMaintenanceWorker>();
 
 var app = builder.Build();
+
+app.UseForwardedHeaders();
 
 app.Use(async (context, next) =>
 {
@@ -86,9 +104,44 @@ app.UseExceptionHandler(handler => handler.Run(async context =>
 
 app.UseCors();
 
+app.Use(async (context, next) =>
+{
+    var path = context.Request.Path;
+    var isAnonymousEndpoint = path.Equals("/api/auth/login") || path.Equals("/api/auth/session") ||
+                              path.Equals("/api/health") || HttpMethods.IsOptions(context.Request.Method);
+    var isApiKeyEndpoint = path.Equals("/api/proxy/random") || path.Equals("/api/proxy/plain");
+    var sessions = context.RequestServices.GetRequiredService<ProxySessionService>();
+    if (path.StartsWithSegments("/api") && !isAnonymousEndpoint &&
+        !(isApiKeyEndpoint && sessions.TryAuthenticateApiKey(context.Request)) &&
+        !sessions.TryGetUser(context.Request, out _))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        await context.Response.WriteAsJsonAsync(new { message = "Authentication is required." });
+        return;
+    }
+
+    await next(context);
+});
+
 await app.Services.GetRequiredService<JsonProxyStore>().InitializeAsync();
 
 var api = app.MapGroup("/api");
+
+api.MapPost("/auth/login", (LoginRequest request, ProxySessionService sessions, HttpContext context) =>
+    sessions.TrySignIn(request.Token, context.Response)
+        ? Results.Ok(new { authenticated = true })
+        : Results.Unauthorized());
+
+api.MapGet("/auth/session", (ProxySessionService sessions, HttpContext context) =>
+    sessions.TryGetUser(context.Request, out var username)
+        ? Results.Ok(new { authenticated = true, username })
+        : Results.Unauthorized());
+
+api.MapPost("/auth/logout", (ProxySessionService sessions, HttpContext context) =>
+{
+    sessions.SignOut(context.Response);
+    return Results.NoContent();
+});
 
 api.MapGet("/health", async (JsonProxyStore store, ProxyPoolProfileManager profileManager,
     CancellationToken cancellationToken) =>

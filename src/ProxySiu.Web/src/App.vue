@@ -27,6 +27,10 @@ const loading = ref(false)
 const actionBusy = ref('')
 const profileSwitching = ref(false)
 const selectedProfile = ref('')
+const sessionLoading = ref(true)
+const authenticated = ref(false)
+const loginToken = ref('')
+const loginBusy = ref(false)
 const dashboard = ref({
   total: 0,
   alive: 0,
@@ -103,11 +107,48 @@ function scheduleDashboardPoll() {
 }
 
 onMounted(async () => {
-  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources()])
-  scheduleDashboardPoll()
+  try {
+    await api.session()
+    authenticated.value = true
+    await initializeAuthenticatedApp()
+  } catch {
+    authenticated.value = false
+  } finally {
+    sessionLoading.value = false
+  }
 })
 
 onBeforeUnmount(() => window.clearTimeout(pollTimer))
+
+async function initializeAuthenticatedApp() {
+  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources()])
+  scheduleDashboardPoll()
+}
+
+async function login() {
+  if (!loginToken.value.trim()) return
+  loginBusy.value = true
+  try {
+    await api.login(loginToken.value)
+    loginToken.value = ''
+    authenticated.value = true
+    await initializeAuthenticatedApp()
+  } catch {
+    ElMessage.error('访问令牌无效')
+  } finally {
+    loginBusy.value = false
+  }
+}
+
+async function logout() {
+  try {
+    await api.logout()
+  } finally {
+    window.clearTimeout(pollTimer)
+    authenticated.value = false
+    loginToken.value = ''
+  }
+}
 
 async function loadDashboard() {
   try {
@@ -361,7 +402,17 @@ function successRate(row) {
 
 <template>
   <el-config-provider :locale="zhCn">
-  <div class="app-shell">
+  <div v-if="sessionLoading" class="login-shell"><div class="login-card"><strong>ProxySiu</strong><span>正在验证会话…</span></div></div>
+  <div v-else-if="!authenticated" class="login-shell">
+    <form class="login-card" @submit.prevent="login">
+      <div class="login-mark"><Aim /></div>
+      <strong>ProxySiu</strong>
+      <span>请输入访问令牌以继续</span>
+      <el-input v-model="loginToken" type="password" show-password autocomplete="current-password" placeholder="Access token" />
+      <el-button type="primary" native-type="submit" :loading="loginBusy" :disabled="!loginToken.trim()">进入管理台</el-button>
+    </form>
+  </div>
+  <div v-else class="app-shell">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-mark"><Aim /></div>
@@ -401,6 +452,7 @@ function successRate(row) {
             <el-option label="高吞吐" value="high-throughput" />
             <el-option label="IDC 安全" value="idc-safe" />
           </el-select>
+          <el-button text @click="logout">退出</el-button>
           <span class="updated"><Timer /> 数据更新于 {{ formatDate(dashboard.updatedAt) }}</span>
           <el-button :icon="Refresh" :loading="actionBusy === 'refresh'" @click="runAction('refresh', '刷新')">
             一键刷新

@@ -2,6 +2,9 @@ using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using System.Reflection;
 using ProxySiu.Api.Models;
 using ProxySiu.Api.Contracts;
@@ -14,6 +17,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("parser filters private addresses and de-duplicates candidates", ParserFiltersAndDeduplicatesAsync),
     ("endpoint safety rejects non-public addresses", EndpointSafetyAsync),
     ("options validator enforces local-only configuration", OptionsValidatorAsync),
+    ("access token issues a protected browser session and read key", AccessTokenAuthAsync),
     ("check planner isolates bootstrap and reserves steady-state quotas", CheckPlannerAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
     ("json store preserves a recoverable backup", JsonStoreBackupAsync)
@@ -114,6 +118,40 @@ static Task OptionsValidatorAsync()
            profiled.MaxChecksPerCycle == 100 && profiled.CheckIntervalMinMinutes == 15 &&
            profiled.CheckIntervalMaxMinutes == 30,
         "Profile selection must override the runtime check rate.");
+    return Task.CompletedTask;
+}
+
+static Task AccessTokenAuthAsync()
+{
+    const string accessToken = "test-token-that-is-long-enough-123456";
+    var validator = new ProxyAuthOptionsValidator();
+    Assert(validator.Validate(null, new ProxyAuthOptions { Enabled = true, AccessToken = accessToken }).Succeeded,
+        "A sufficiently long access token must be accepted.");
+    Assert(validator.Validate(null, new ProxyAuthOptions { Enabled = true, AccessToken = "too-short" }).Failed,
+        "A short access token must be rejected.");
+
+    var services = new ServiceCollection();
+    services.AddDataProtection();
+    var serviceProvider = services.BuildServiceProvider();
+    var sessions = new ProxySessionService(
+        Options.Create(new ProxyAuthOptions { Enabled = true, AccessToken = accessToken, CookieSecure = false }),
+        serviceProvider.GetRequiredService<IDataProtectionProvider>());
+    var signIn = new DefaultHttpContext();
+    Assert(sessions.TrySignIn(accessToken, signIn.Response), "The configured token must sign in.");
+    Assert(!sessions.TrySignIn("wrong-token", signIn.Response), "A different token must not sign in.");
+
+    var cookieHeader = signIn.Response.Headers.SetCookie.SingleOrDefault();
+    Assert(!string.IsNullOrWhiteSpace(cookieHeader), "Signing in must issue a cookie.");
+    var cookiePair = cookieHeader!.Split(';', 2)[0];
+    var sessionRequest = new DefaultHttpContext();
+    sessionRequest.Request.Headers.Cookie = cookiePair;
+    Assert(sessions.TryGetUser(sessionRequest.Request, out _), "The protected session cookie must authenticate.");
+
+    var apiRequest = new DefaultHttpContext();
+    apiRequest.Request.Headers.Authorization = $"Bearer {accessToken}";
+    Assert(sessions.TryAuthenticateApiKey(apiRequest.Request), "Bearer token must authenticate proxy-read API access.");
+    apiRequest.Request.Headers.Authorization = "Bearer incorrect";
+    Assert(!sessions.TryAuthenticateApiKey(apiRequest.Request), "An incorrect bearer token must be rejected.");
     return Task.CompletedTask;
 }
 

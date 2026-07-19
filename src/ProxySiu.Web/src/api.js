@@ -3,6 +3,7 @@ const baseUrl = import.meta.env.VITE_API_BASE || '/api'
 async function request(path, options = {}) {
   const response = await fetch(`${baseUrl}${path}`, {
     ...options,
+    credentials: 'include',
     headers: {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...options.headers
@@ -28,6 +29,9 @@ function queryString(params) {
 }
 
 export const api = {
+  login: (token) => request('/auth/login', { method: 'POST', body: JSON.stringify({ token }) }),
+  logout: () => request('/auth/logout', { method: 'POST' }),
+  session: () => request('/auth/session'),
   dashboard: () => request('/dashboard'),
   proxies: (params) => request(`/proxies?${queryString(params)}`),
   addProxy: (data) => request('/proxies', { method: 'POST', body: JSON.stringify(data) }),

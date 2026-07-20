@@ -52,6 +52,8 @@ const query = reactive({ q: '', status: '', protocol: '', country: '', sort: '',
 
 const proxyDialogVisible = ref(false)
 const proxyForm = reactive({ host: '', port: 8080, protocol: 'http', isPinned: true })
+const proxyDetailVisible = ref(false)
+const selectedProxy = ref(null)
 const sourceDialogVisible = ref(false)
 const editingSourceId = ref(null)
 const sourceForm = reactive({ name: '', url: '', protocol: 'http', enabled: true })
@@ -72,6 +74,7 @@ const maintenanceOperation = computed(() => dashboard.value.operations?.activeOp
 const maintenanceBusy = computed(() => maintenanceOperation.value !== null)
 const checkProgress = computed(() => Math.round(checkQueue.value.progressPercent || 0))
 const displayedCheckProgress = computed(() => checkQueue.value.isRunning ? checkProgress.value : 0)
+const mobileSort = computed(() => query.sort ? `${query.sort}:${query.desc ? 'desc' : 'asc'}` : '')
 const checkProgressLabel = computed(() => {
   if (checkQueue.value.isRunning) return `${checkProgress.value}%`
   return '—'
@@ -217,6 +220,14 @@ function sortProxies({ prop, order }) {
   loadProxies()
 }
 
+function sortMobileProxies(value) {
+  const [sort = '', direction = ''] = (value || '').split(':')
+  query.sort = sort
+  query.desc = direction === 'desc'
+  query.page = 1
+  loadProxies()
+}
+
 async function runActionLegacy(name, label, params = {}) {
   actionBusy.value = name
   try {
@@ -290,11 +301,17 @@ async function removeProxy(row) {
   try {
     await ElMessageBox.confirm(`确定删除 ${row.host}:${row.port}？`, '删除代理', { type: 'warning' })
     await api.deleteProxy(row.id)
+    if (selectedProxy.value?.id === row.id) proxyDetailVisible.value = false
     ElMessage.success('已删除')
     await Promise.all([loadDashboard(), loadProxies()])
   } catch (error) {
     if (error !== 'cancel') ElMessage.error(error.message || '删除失败')
   }
+}
+
+function openProxyDetails(row) {
+  selectedProxy.value = row
+  proxyDetailVisible.value = true
 }
 
 function openProxyDialog() {
@@ -472,16 +489,24 @@ function successRate(row) {
           </el-select>
           <el-button text @click="logout">退出</el-button>
           <span class="updated"><Timer /> 数据更新于 {{ formatDate(dashboard.updatedAt) }}</span>
-          <el-button :icon="Refresh" :loading="actionBusy === 'refresh'" @click="runAction('refresh', '刷新')">
+          <el-button class="desktop-global-action" :icon="Refresh" :loading="actionBusy === 'refresh'" @click="runAction('refresh', '刷新')">
             一键刷新
           </el-button>
-          <el-button type="primary" :icon="VideoPlay" :loading="actionBusy === 'check' || checkQueue.isRunning" @click="runAction('check', '检测到期代理', { force: false })">
+          <el-button class="desktop-global-action" type="primary" :icon="VideoPlay" :loading="actionBusy === 'check' || checkQueue.isRunning" @click="runAction('check', '检测到期代理', { force: false })">
             {{ checkQueue.isRunning ? `检测中 ${checkProgress}%` : '检测到期代理' }}
           </el-button>
         </div>
       </header>
 
       <section v-if="activeView === 'dashboard'" class="content dashboard-view">
+        <div class="mobile-status">
+          <div class="pulse" :class="{ busy: dashboard.operations?.isScanning || dashboard.operations?.isChecking }"></div>
+          <div>
+            <strong>{{ dashboard.operations?.isScanning ? '正在采集' : dashboard.operations?.isChecking ? '正在检测' : '后台守护中' }}</strong>
+            <span v-if="checkQueue.isRunning">本任务：已完成 {{ checkQueue.completed }}/{{ checkQueue.total }} · 进行中 {{ checkQueue.inFlight }}</span>
+            <span v-else>{{ dashboard.operations?.lastMessage || '等待下一次维护周期' }}</span>
+          </div>
+        </div>
         <div class="metrics-grid">
           <article class="metric-card hero-metric">
             <div class="metric-icon blue"><Connection /></div>
@@ -575,6 +600,8 @@ function successRate(row) {
               </div>
             </div>
             <div class="task-list queue-actions">
+              <button class="mobile-global-action" :disabled="maintenanceBusy" @click="runAction('refresh', '刷新')"><span class="task-icon"><Refresh /></span><span><strong>一键刷新</strong><small>立即执行采集、检测与清理流程</small></span><em>运行</em></button>
+              <button class="mobile-global-action" :disabled="checkQueue.isRunning" @click="runAction('check', '检测到期代理', { force: false })"><span class="task-icon"><VideoPlay /></span><span><strong>检测到期代理</strong><small>只检测已到期的代理记录</small></span><em>{{ checkQueue.isRunning ? '运行中' : '运行' }}</em></button>
               <button @click="runAction('scan', '采集')"><span class="task-icon"><Refresh /></span><span><strong>扫描公开列表</strong><small>上次 {{ formatDate(dashboard.operations?.lastScanAt) }}</small></span><em>运行</em></button>
               <button :disabled="checkQueue.isRunning" @click="runAction('check', '全量检测', { force: true })"><span class="task-icon"><VideoPlay /></span><span><strong>强制检测一批</strong><small>忽略到期时间，按优先级取一批</small></span><em>{{ checkQueue.isRunning ? '运行中' : '运行' }}</em></button>
               <button @click="runAction('prune', '清理')"><span class="task-icon"><Delete /></span><span><strong>清理长期失效</strong><small>上次 {{ formatDate(dashboard.operations?.lastPruneAt) }}</small></span><em>运行</em></button>
@@ -599,6 +626,15 @@ function successRate(row) {
               </el-select>
               <el-button :icon="Search" @click="searchProxies">筛选</el-button>
             </div>
+            <el-select class="mobile-sort" :model-value="mobileSort" placeholder="默认排序" @change="sortMobileProxies">
+              <el-option label="默认排序" value="" />
+              <el-option label="状态：升序" value="status:asc" />
+              <el-option label="状态：降序" value="status:desc" />
+              <el-option label="延迟：低到高" value="latency:asc" />
+              <el-option label="延迟：高到低" value="latency:desc" />
+              <el-option label="成功率：低到高" value="successRate:asc" />
+              <el-option label="成功率：高到低" value="successRate:desc" />
+            </el-select>
             <el-button type="primary" :icon="Plus" @click="openProxyDialog">手动添加</el-button>
           </div>
 
@@ -630,6 +666,15 @@ function successRate(row) {
               <template #default="{ row }"><el-button link type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button><el-button link type="danger" @click="removeProxy(row)">删除</el-button></template>
             </el-table-column>
           </el-table>
+          <div v-loading="loading" class="mobile-card-list proxy-card-list">
+            <article v-for="row in proxyRows" :key="row.id" class="mobile-card">
+              <div class="mobile-card-heading"><div><strong class="card-address">{{ row.host }}:{{ row.port }}</strong><small>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</small></div><el-tag :type="statusMeta(row.status)[1]" effect="light" round>{{ statusMeta(row.status)[0] }}</el-tag></div>
+              <div class="card-chips"><span class="protocol-chip">{{ protocolLabel(row.protocol) }}</span><span :class="['latency', { fast: row.latencyMs != null && row.latencyMs < 1000 }]">{{ row.latencyMs != null ? `${row.latencyMs} ms` : '延迟未知' }}</span></div>
+              <p class="card-location">{{ row.status === 'alive' ? (geoLabel(row.geoLocation) || (row.exitIp ? '归属地查询中/未知' : '尚无出口信息')) : '等待检测后获取归属地' }}</p>
+              <div class="mobile-card-actions"><el-button @click="openProxyDetails(row)">详情</el-button><el-button type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button></div>
+            </article>
+            <p v-if="!loading && !proxyRows.length" class="mobile-empty">暂无符合条件的代理</p>
+          </div>
           <div class="pagination-wrap"><span>共 {{ proxyTotal.toLocaleString() }} 条记录</span><el-pagination v-model:current-page="query.page" v-model:page-size="query.pageSize" background layout="prev, pager, next" :total="proxyTotal" @current-change="loadProxies" /></div>
         </article>
       </section>
@@ -645,9 +690,24 @@ function successRate(row) {
             <el-table-column label="启用" width="85"><template #default="{ row }"><el-switch v-model="row.enabled" @change="toggleSource(row)" /></template></el-table-column>
             <el-table-column label="操作" width="130" fixed="right"><template #default="{ row }"><el-button link type="primary" :icon="Edit" @click="openSourceDialog(row)">编辑</el-button><el-button link type="danger" :icon="Delete" @click="removeSource(row)" /></template></el-table-column>
           </el-table>
+          <div class="mobile-card-list source-card-list">
+            <article v-for="row in sources" :key="row.id" class="mobile-card">
+              <div class="mobile-card-heading"><div class="source-name"><span class="source-logo"><Link /></span><div><strong>{{ row.name }}</strong><small v-if="row.isBuiltIn">内置源</small></div></div><span class="protocol-chip">{{ protocolLabel(row.protocol) }}</span></div>
+              <a class="source-url" :href="row.url" target="_blank" rel="noreferrer">{{ row.url }}</a>
+              <div class="source-card-meta"><span :class="{ failed: row.lastError }">{{ row.lastError ? `扫描失败：${row.lastError}` : `最近扫描：${row.lastFound} 条` }}</span><small>{{ formatDate(row.lastScanAt) }}</small></div>
+              <div class="mobile-card-actions"><el-switch v-model="row.enabled" active-text="启用" inactive-text="停用" @change="toggleSource(row)" /><span class="card-actions-spacer"></span><el-button @click="openSourceDialog(row)">编辑</el-button><el-button type="danger" @click="removeSource(row)">删除</el-button></div>
+            </article>
+            <p v-if="!sources.length" class="mobile-empty">暂无采集源</p>
+          </div>
         </article>
       </section>
     </main>
+
+    <nav class="mobile-nav" aria-label="主导航">
+      <button :class="{ active: activeView === 'dashboard' }" @click="changeView('dashboard')"><DataAnalysis /><span>总览</span></button>
+      <button :class="{ active: activeView === 'proxies' }" @click="changeView('proxies')"><Connection /><span>代理池</span><em>{{ dashboard.alive }}</em></button>
+      <button :class="{ active: activeView === 'sources' }" @click="changeView('sources')"><Collection /><span>采集源</span><em>{{ dashboard.enabledSources }}</em></button>
+    </nav>
 
     <el-dialog v-model="proxyDialogVisible" title="手动添加代理" width="460px">
       <el-form label-position="top">
@@ -666,6 +726,24 @@ function successRate(row) {
       </el-form>
       <template #footer><el-button @click="sourceDialogVisible = false">取消</el-button><el-button type="primary" @click="saveSource">保存</el-button></template>
     </el-dialog>
+
+    <el-drawer v-model="proxyDetailVisible" title="代理详情" direction="btt" size="72%" class="proxy-detail-drawer">
+      <div v-if="selectedProxy" class="proxy-detail">
+        <div class="detail-primary"><strong>{{ selectedProxy.host }}:{{ selectedProxy.port }}</strong><el-tag :type="statusMeta(selectedProxy.status)[1]" effect="light" round>{{ statusMeta(selectedProxy.status)[0] }}</el-tag></div>
+        <dl class="detail-grid">
+          <div><dt>协议</dt><dd>{{ protocolLabel(selectedProxy.protocol) }}</dd></div>
+          <div><dt>出口 IP</dt><dd>{{ selectedProxy.exitIp || '—' }}</dd></div>
+          <div><dt>归属地</dt><dd>{{ geoLabel(selectedProxy.geoLocation) || '—' }}</dd></div>
+          <div><dt>延迟</dt><dd>{{ selectedProxy.latencyMs != null ? `${selectedProxy.latencyMs} ms` : '—' }}</dd></div>
+          <div><dt>成功率</dt><dd>{{ successRate(selectedProxy) }}</dd></div>
+          <div><dt>固定状态</dt><dd>{{ selectedProxy.isPinned ? '固定记录' : '自动维护' }}</dd></div>
+          <div><dt>来源</dt><dd>{{ selectedProxy.sources.length ? selectedProxy.sources.join('、') : selectedProxy.isPinned ? '手动固定' : '未知' }}</dd></div>
+          <div><dt>上次检测</dt><dd>{{ formatDate(selectedProxy.lastCheckedAt) }}</dd></div>
+          <div><dt>下次检测</dt><dd>{{ selectedProxy.nextCheckAt ? formatDate(selectedProxy.nextCheckAt) : '尚未首次检测' }}</dd></div>
+        </dl>
+        <div class="detail-actions"><el-button :loading="checkingIds.has(selectedProxy.id)" @click="checkProxy(selectedProxy)">检测代理</el-button><el-button type="danger" @click="removeProxy(selectedProxy)">删除代理</el-button></div>
+      </div>
+    </el-drawer>
   </div>
   </el-config-provider>
 </template>

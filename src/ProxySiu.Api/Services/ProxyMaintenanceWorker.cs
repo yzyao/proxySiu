@@ -9,6 +9,8 @@ public sealed class ProxyMaintenanceWorker(
     ProxyPoolProfileManager profileManager,
     ILogger<ProxyMaintenanceWorker> logger) : BackgroundService
 {
+    private static readonly TimeSpan InitialSweepCheckDelay = TimeSpan.FromSeconds(5);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var initialOptions = profileManager.Current;
@@ -17,6 +19,7 @@ public sealed class ProxyMaintenanceWorker(
             : DateTimeOffset.UtcNow.AddMinutes(initialOptions.ScanIntervalMinutes);
         var nextCheck = DateTimeOffset.UtcNow.AddSeconds(8);
         var nextPrune = DateTimeOffset.UtcNow.AddMinutes(2);
+        var scanDeferredForInitialSweep = false;
         pool.SetNextCheckAt(nextCheck);
 
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(10));
@@ -26,18 +29,42 @@ public sealed class ProxyMaintenanceWorker(
             {
                 var now = DateTimeOffset.UtcNow;
                 var options = profileManager.Current;
+                var initialSweepPending = await pool.HasInitialPendingAsync(stoppingToken);
+                if (initialSweepPending && nextCheck > now.Add(InitialSweepCheckDelay))
+                {
+                    nextCheck = now.Add(InitialSweepCheckDelay);
+                    pool.SetNextCheckAt(nextCheck);
+                }
+
                 if (now >= nextScan)
                 {
-                    await RunScheduledAsync(MaintenanceOperationKind.Scan, false, stoppingToken);
-                    nextScan = NextRunWithJitter(options.ScanIntervalMinutes, 0.15);
-                    nextCheck = DateTimeOffset.UtcNow.AddSeconds(Random.Shared.Next(5, 21));
-                    pool.SetNextCheckAt(nextCheck);
+                    if (initialSweepPending)
+                    {
+                        scanDeferredForInitialSweep = true;
+                        nextScan = DateTimeOffset.UtcNow.AddMinutes(1);
+                        logger.LogInformation("Deferred scheduled scan until the initial pending-proxy sweep completes.");
+                    }
+                    else if (scanDeferredForInitialSweep)
+                    {
+                        scanDeferredForInitialSweep = false;
+                        nextScan = NextRunWithJitter(options.ScanIntervalMinutes, 0.15);
+                        logger.LogInformation("Initial pending-proxy sweep completed; resumed the normal scan schedule.");
+                    }
+                    else
+                    {
+                        await RunScheduledAsync(MaintenanceOperationKind.Scan, false, stoppingToken);
+                        nextScan = NextRunWithJitter(options.ScanIntervalMinutes, 0.15);
+                        nextCheck = DateTimeOffset.UtcNow.AddSeconds(Random.Shared.Next(5, 21));
+                        pool.SetNextCheckAt(nextCheck);
+                    }
                 }
 
                 if (now >= nextCheck)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Check, false, stoppingToken);
-                    nextCheck = NextCheckRun(options);
+                    nextCheck = await pool.HasInitialPendingAsync(stoppingToken)
+                        ? DateTimeOffset.UtcNow.Add(InitialSweepCheckDelay)
+                        : NextCheckRun(options);
                     pool.SetNextCheckAt(nextCheck);
                 }
 

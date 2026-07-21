@@ -19,6 +19,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("options validator enforces local-only configuration", OptionsValidatorAsync),
     ("access token issues a protected browser session and read key", AccessTokenAuthAsync),
     ("check planner isolates bootstrap and reserves steady-state quotas", CheckPlannerAsync),
+    ("initial sweep status tracks pending candidates", InitialSweepStatusAsync),
     ("pool capacity stays bounded and removes stale unseen records", PoolRetentionAsync),
     ("new candidates enter a full pool without displacing recovery dead records", PartitionedAdmissionAsync),
     ("alive country dictionary and country proxy selection stay scoped to live proxies", CountrySelectionAsync),
@@ -218,6 +219,47 @@ static Task CheckPlannerAsync()
     Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Pending) == 200, "Pending reserve must be honored.");
     Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Dead) == 80, "Dead reserve must be honored.");
     return Task.CompletedTask;
+}
+
+static async Task InitialSweepStatusAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var options = Options.Create(new ProxyPoolOptions { DataFile = Path.Combine(directory, "pool.json") });
+        var environment = new TestHostEnvironment(directory);
+        var store = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
+        var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
+        var pool = new ProxyPoolService(store, new ProxyListParser(options),
+            new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance), new TestHttpClientFactory(),
+            profileManager, NullLogger<ProxyPoolService>.Instance);
+        await store.InitializeAsync();
+
+        Assert(!await pool.HasInitialPendingAsync(CancellationToken.None),
+            "An empty pool must not block scheduled scans.");
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.Add(NewProxy("8.8.8.8", 8080));
+            return 0;
+        });
+        Assert(await pool.HasInitialPendingAsync(CancellationToken.None),
+            "Pending proxies must keep the initial sweep active.");
+        await store.WriteAsync(state =>
+        {
+            state.InitialSweepCompleted = true;
+            return 0;
+        });
+        Assert(!await pool.HasInitialPendingAsync(CancellationToken.None),
+            "Completed initial sweeps must not block the normal scan schedule.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
 }
 
 static async Task PoolRetentionAsync()

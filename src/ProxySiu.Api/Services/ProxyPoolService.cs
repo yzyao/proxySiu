@@ -574,6 +574,10 @@ public sealed class ProxyPoolService
         }
     }
 
+    public Task<bool> HasInitialPendingAsync(CancellationToken cancellationToken) =>
+        _store.ReadAsync(state => !state.InitialSweepCompleted && state.Proxies.Any(proxy =>
+            proxy.Status == ProxyStatus.Pending), cancellationToken);
+
     public async Task<PoolOperationResult> PruneAsync(CancellationToken cancellationToken)
     {
         if (Interlocked.CompareExchange(ref _isPruning, 1, 0) != 0)

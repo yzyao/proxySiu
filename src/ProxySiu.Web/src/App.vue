@@ -379,11 +379,38 @@ async function removeSource(row) {
 async function copyRandom(protocol = '') {
   try {
     const result = await api.randomProxy(protocol)
-    await navigator.clipboard.writeText(result.url)
+    await copyToClipboard(result.url)
     ElMessage.success(`已复制 ${result.url}`)
   } catch (error) {
     ElMessage.error(error.message)
   }
+}
+
+async function copyProxy(row) {
+  try {
+    await copyToClipboard(row.url)
+    ElMessage.success(`已复制 ${row.url}`)
+  } catch (error) {
+    ElMessage.error(error.message || '复制失败')
+  }
+}
+
+async function copyToClipboard(value) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = value
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('浏览器不支持复制功能')
 }
 
 function protocolLabel(protocol) {
@@ -662,8 +689,8 @@ function successRate(row) {
                 </div>
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="130" fixed="right">
-              <template #default="{ row }"><el-button link type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button><el-button link type="danger" @click="removeProxy(row)">删除</el-button></template>
+            <el-table-column label="操作" width="185" fixed="right">
+              <template #default="{ row }"><el-button v-if="row.status === 'alive'" link type="primary" :icon="CopyDocument" @click="copyProxy(row)">复制</el-button><el-button link type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button><el-button link type="danger" @click="removeProxy(row)">删除</el-button></template>
             </el-table-column>
           </el-table>
           <div v-loading="loading" class="mobile-card-list proxy-card-list">
@@ -671,7 +698,7 @@ function successRate(row) {
               <div class="mobile-card-heading"><div><strong class="card-address">{{ row.host }}:{{ row.port }}</strong><small>{{ row.exitIp ? `出口 ${row.exitIp}` : '尚无出口信息' }}</small></div><el-tag :type="statusMeta(row.status)[1]" effect="light" round>{{ statusMeta(row.status)[0] }}</el-tag></div>
               <div class="card-chips"><span class="protocol-chip">{{ protocolLabel(row.protocol) }}</span><span :class="['latency', { fast: row.latencyMs != null && row.latencyMs < 1000 }]">{{ row.latencyMs != null ? `${row.latencyMs} ms` : '延迟未知' }}</span></div>
               <p class="card-location">{{ row.status === 'alive' ? (geoLabel(row.geoLocation) || (row.exitIp ? '归属地查询中/未知' : '尚无出口信息')) : '等待检测后获取归属地' }}</p>
-              <div class="mobile-card-actions"><el-button @click="openProxyDetails(row)">详情</el-button><el-button type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button></div>
+              <div class="mobile-card-actions"><el-button @click="openProxyDetails(row)">详情</el-button><el-button v-if="row.status === 'alive'" type="primary" plain :icon="CopyDocument" @click="copyProxy(row)">复制</el-button><el-button type="primary" :loading="checkingIds.has(row.id)" @click="checkProxy(row)">检测</el-button></div>
             </article>
             <p v-if="!loading && !proxyRows.length" class="mobile-empty">暂无符合条件的代理</p>
           </div>
@@ -741,7 +768,7 @@ function successRate(row) {
           <div><dt>上次检测</dt><dd>{{ formatDate(selectedProxy.lastCheckedAt) }}</dd></div>
           <div><dt>下次检测</dt><dd>{{ selectedProxy.nextCheckAt ? formatDate(selectedProxy.nextCheckAt) : '尚未首次检测' }}</dd></div>
         </dl>
-        <div class="detail-actions"><el-button :loading="checkingIds.has(selectedProxy.id)" @click="checkProxy(selectedProxy)">检测代理</el-button><el-button type="danger" @click="removeProxy(selectedProxy)">删除代理</el-button></div>
+        <div class="detail-actions"><el-button v-if="selectedProxy.status === 'alive'" type="primary" plain :icon="CopyDocument" @click="copyProxy(selectedProxy)">复制代理</el-button><el-button :loading="checkingIds.has(selectedProxy.id)" @click="checkProxy(selectedProxy)">检测代理</el-button><el-button type="danger" @click="removeProxy(selectedProxy)">删除代理</el-button></div>
       </div>
     </el-drawer>
   </div>

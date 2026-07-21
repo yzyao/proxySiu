@@ -385,6 +385,8 @@ public sealed class ProxyPoolService
                 var updated = 0;
                 var deferred = 0;
                 var capacityRemoved = 0;
+                var pendingCount = state.Proxies.Count(proxy => proxy.Status == ProxyStatus.Pending && !proxy.IsPinned);
+                var maxPending = Math.Clamp(Options.MaxPendingProxies, 1, Options.MaxPoolSize);
                 foreach (var result in results)
                 {
                     var source = state.Sources.FirstOrDefault(item => item.Id == result.SourceId);
@@ -420,6 +422,12 @@ public sealed class ProxyPoolService
                             continue;
                         }
 
+                        if (pendingCount >= maxPending)
+                        {
+                            deferred++;
+                            continue;
+                        }
+
                         if (state.Proxies.Count >= Options.MaxPoolSize)
                         {
                             var eviction = SelectOneCapacityEviction(state.Proxies, Options.MaxConsecutiveFailures);
@@ -431,6 +439,10 @@ public sealed class ProxyPoolService
 
                             RemoveWithQuarantine(state, [eviction], now, Options);
                             existing.Remove(eviction.Key);
+                            if (eviction.Status == ProxyStatus.Pending && !eviction.IsPinned)
+                            {
+                                pendingCount--;
+                            }
                             quarantined[eviction.Key] = new ProxyQuarantine
                             {
                                 Key = eviction.Key,
@@ -450,6 +462,7 @@ public sealed class ProxyPoolService
                         };
                         state.Proxies.Add(proxy);
                         existing[key] = proxy;
+                        pendingCount++;
                         added++;
                     }
                 }
@@ -574,9 +587,20 @@ public sealed class ProxyPoolService
         }
     }
 
-    public Task<bool> HasInitialPendingAsync(CancellationToken cancellationToken) =>
-        _store.ReadAsync(state => !state.InitialSweepCompleted && state.Proxies.Any(proxy =>
-            proxy.Status == ProxyStatus.Pending), cancellationToken);
+    public Task<bool> HasPendingAsync(CancellationToken cancellationToken) =>
+        _store.ReadAsync(state => state.Proxies.Any(proxy => proxy.Status == ProxyStatus.Pending), cancellationToken);
+
+    public Task<int> TrimExcessPendingAsync(CancellationToken cancellationToken) =>
+        _store.WriteAsync(state =>
+        {
+            var now = DateTimeOffset.UtcNow;
+            var excess = state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Pending && !proxy.IsPinned)
+                .OrderByDescending(proxy => proxy.FirstSeenAt)
+                .Skip(Math.Clamp(Options.MaxPendingProxies, 1, Options.MaxPoolSize))
+                .ToList();
+            RemoveWithQuarantine(state, excess, now, Options);
+            return excess.Count;
+        }, cancellationToken);
 
     public async Task<PoolOperationResult> PruneAsync(CancellationToken cancellationToken)
     {
@@ -767,9 +791,8 @@ public sealed class ProxyPoolService
         DateTimeOffset now)
     {
         var capacity = Math.Clamp(Options.MaxChecksPerCycle, 1, 20_000);
-        var initialPending = !state.InitialSweepCompleted && state.Proxies.Any(proxy =>
-            proxy.Status == ProxyStatus.Pending);
-        if (initialPending)
+        var pendingBacklog = state.Proxies.Any(proxy => proxy.Status == ProxyStatus.Pending);
+        if (pendingBacklog)
         {
             return state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Pending)
                 .OrderBy(proxy => proxy.FirstSeenAt)

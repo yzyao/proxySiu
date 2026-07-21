@@ -29,6 +29,7 @@ public sealed class ProxyPoolOptions
     public int DeadChecksPerCycle { get; set; } = 80;
     public int MaxChecksPerCycle { get; set; } = 400;
     public int MaxCandidatesPerSource { get; set; } = 800;
+    public int MaxPendingProxies { get; set; } = 600;
     public int MaxSourceBytes { get; set; } = 2_000_000;
     public int MaxConsecutiveFailures { get; set; } = 3;
     public int RemoveDeadAfterHours { get; set; } = 24;
@@ -55,6 +56,7 @@ public sealed class ProxyPoolProfile
     public int? PendingChecksPerCycle { get; set; }
     public int? DeadChecksPerCycle { get; set; }
     public int? MaxChecksPerCycle { get; set; }
+    public int? MaxPendingProxies { get; set; }
 
     public void ApplyTo(ProxyPoolOptions options)
     {
@@ -70,6 +72,7 @@ public sealed class ProxyPoolProfile
         options.PendingChecksPerCycle = PendingChecksPerCycle ?? options.PendingChecksPerCycle;
         options.DeadChecksPerCycle = DeadChecksPerCycle ?? options.DeadChecksPerCycle;
         options.MaxChecksPerCycle = MaxChecksPerCycle ?? options.MaxChecksPerCycle;
+        options.MaxPendingProxies = MaxPendingProxies ?? options.MaxPendingProxies;
     }
 }
 
@@ -210,6 +213,8 @@ public sealed class ProxyPoolOptionsValidator : IValidateOptions<ProxyPoolOption
                 options.MaxChecksPerCycle,
             "The per-cycle queue quotas cannot exceed MaxChecksPerCycle.");
         Require(InRange(options.MaxCandidatesPerSource, 1, 50_000), "MaxCandidatesPerSource must be between 1 and 50000.");
+        Require(InRange(options.MaxPendingProxies, 1, options.MaxPoolSize),
+            "MaxPendingProxies must be between 1 and MaxPoolSize.");
         Require(InRange(options.MaxSourceBytes, 1_024, 20_000_000), "MaxSourceBytes must be between 1024 and 20000000.");
         Require(InRange(options.MaxConsecutiveFailures, 1, 100), "MaxConsecutiveFailures must be between 1 and 100.");
         Require(InRange(options.RemoveDeadAfterHours, 1, 8_760), "RemoveDeadAfterHours must be between 1 and 8760.");

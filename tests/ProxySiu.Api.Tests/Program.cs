@@ -195,6 +195,7 @@ static Task CheckPlannerAsync()
 
     var bootstrap = new ProxyPoolState
     {
+        InitialSweepCompleted = true,
         Proxies = Enumerable.Range(0, 500).Select(index => NewProxy($"8.8.4.{index % 250}", 10_000 + index))
             .Append(AliveProxy("1.1.1.1", 8080, now.AddHours(-1)))
             .ToList()
@@ -206,18 +207,18 @@ static Task CheckPlannerAsync()
     var steady = new ProxyPoolState
     {
         InitialSweepCompleted = true,
-        Proxies = Enumerable.Range(0, 150).Select(index => AliveProxy($"9.9.0.{index}", 10_000 + index,
+        Proxies = Enumerable.Range(0, 250).Select(index => AliveProxy($"9.9.0.{index}", 10_000 + index,
                 now.AddHours(-1)))
-            .Concat(Enumerable.Range(0, 250).Select(index => NewProxy($"8.8.8.{index}", 20_000 + index)))
-            .Concat(Enumerable.Range(0, 100).Select(index => DeadProxy($"4.4.4.{index}", 30_000 + index,
+            .Concat(Enumerable.Range(0, 250).Select(index => DeadProxy($"4.4.4.{index}", 30_000 + index,
                 now.AddHours(-2))))
             .ToList()
     };
     var steadySelection = Plan(pool, steady, false, now);
     Assert(steadySelection.Count == 400, "Steady-state selection must fill the batch.");
-    Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Alive) == 120, "Alive reserve must be honored.");
-    Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Pending) == 200, "Pending reserve must be honored.");
-    Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Dead) == 80, "Dead reserve must be honored.");
+    Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Alive) >= 120,
+        "Alive reserve must be honored after the pending backlog is clear.");
+    Assert(steadySelection.Count(proxy => proxy.Status == ProxyStatus.Dead) >= 80,
+        "Dead reserve must be honored after the pending backlog is clear.");
     return Task.CompletedTask;
 }
 
@@ -227,7 +228,11 @@ static async Task InitialSweepStatusAsync()
     Directory.CreateDirectory(directory);
     try
     {
-        var options = Options.Create(new ProxyPoolOptions { DataFile = Path.Combine(directory, "pool.json") });
+        var options = Options.Create(new ProxyPoolOptions
+        {
+            DataFile = Path.Combine(directory, "pool.json"),
+            MaxPendingProxies = 2
+        });
         var environment = new TestHostEnvironment(directory);
         var store = new JsonProxyStore(options, environment, NullLogger<JsonProxyStore>.Instance);
         var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
@@ -236,22 +241,28 @@ static async Task InitialSweepStatusAsync()
             profileManager, NullLogger<ProxyPoolService>.Instance);
         await store.InitializeAsync();
 
-        Assert(!await pool.HasInitialPendingAsync(CancellationToken.None),
+        Assert(!await pool.HasPendingAsync(CancellationToken.None),
             "An empty pool must not block scheduled scans.");
         await store.WriteAsync(state =>
         {
             state.Proxies.Add(NewProxy("8.8.8.8", 8080));
+            state.Proxies.Add(NewProxy("1.1.1.1", 8080));
+            state.Proxies.Add(NewProxy("9.9.9.9", 8080));
             return 0;
         });
-        Assert(await pool.HasInitialPendingAsync(CancellationToken.None),
+        Assert(await pool.HasPendingAsync(CancellationToken.None),
             "Pending proxies must keep the initial sweep active.");
         await store.WriteAsync(state =>
         {
             state.InitialSweepCompleted = true;
             return 0;
         });
-        Assert(!await pool.HasInitialPendingAsync(CancellationToken.None),
-            "Completed initial sweeps must not block the normal scan schedule.");
+        Assert(await pool.HasPendingAsync(CancellationToken.None),
+            "New pending proxies must be drained immediately even after the initial sweep completed.");
+        Assert(await pool.TrimExcessPendingAsync(CancellationToken.None) == 1,
+            "The pending buffer must remove excess automatically discovered candidates.");
+        Assert(await store.ReadAsync(state => state.Proxies.Count) == 2,
+            "The pending buffer must retain only its configured capacity.");
     }
     finally
     {

@@ -29,8 +29,15 @@ public sealed class ProxyMaintenanceWorker(
             {
                 var now = DateTimeOffset.UtcNow;
                 var options = profileManager.Current;
-                var initialSweepPending = await pool.HasInitialPendingAsync(stoppingToken);
-                if (initialSweepPending && nextCheck > now.Add(InitialSweepCheckDelay))
+                var removedPending = await pool.TrimExcessPendingAsync(stoppingToken);
+                if (removedPending > 0)
+                {
+                    logger.LogInformation("Removed {Count} excess pending proxies to enforce the pending buffer.",
+                        removedPending);
+                }
+
+                var pendingBacklog = await pool.HasPendingAsync(stoppingToken);
+                if (pendingBacklog && nextCheck > now.Add(InitialSweepCheckDelay))
                 {
                     nextCheck = now.Add(InitialSweepCheckDelay);
                     pool.SetNextCheckAt(nextCheck);
@@ -38,7 +45,7 @@ public sealed class ProxyMaintenanceWorker(
 
                 if (now >= nextScan)
                 {
-                    if (initialSweepPending)
+                    if (pendingBacklog)
                     {
                         scanDeferredForInitialSweep = true;
                         nextScan = DateTimeOffset.UtcNow.AddMinutes(1);
@@ -62,7 +69,7 @@ public sealed class ProxyMaintenanceWorker(
                 if (now >= nextCheck)
                 {
                     await RunScheduledAsync(MaintenanceOperationKind.Check, false, stoppingToken);
-                    nextCheck = await pool.HasInitialPendingAsync(stoppingToken)
+                    nextCheck = await pool.HasPendingAsync(stoppingToken)
                         ? DateTimeOffset.UtcNow.Add(InitialSweepCheckDelay)
                         : NextCheckRun(options);
                     pool.SetNextCheckAt(nextCheck);

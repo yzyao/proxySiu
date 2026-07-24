@@ -425,21 +425,31 @@ static async Task CountrySelectionAsync()
 
         var us = AliveProxy("1.1.1.1", 8080, DateTimeOffset.UtcNow);
         us.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
+        var usSecond = AliveProxy("1.1.1.2", 8080, DateTimeOffset.UtcNow);
+        usSecond.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
+        var usThird = AliveProxy("1.1.1.3", 8080, DateTimeOffset.UtcNow);
+        usThird.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
+        var usFourth = AliveProxy("1.1.1.4", 8080, DateTimeOffset.UtcNow);
+        usFourth.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
         var cn = AliveProxy("2.2.2.2", 8080, DateTimeOffset.UtcNow);
         cn.GeoLocation = new IpGeoLocation("CN", "China", null, null, null);
         var dead = DeadProxy("3.3.3.3", 8080, DateTimeOffset.UtcNow);
         dead.GeoLocation = new IpGeoLocation("US", "United States", null, null, null);
         await store.WriteAsync(state =>
         {
-            state.Proxies.AddRange([us, cn, dead]);
+            state.Proxies.AddRange([us, usSecond, usThird, usFourth, cn, dead]);
             return 0;
         });
 
         var countries = await pool.GetAliveCountriesAsync(null, CancellationToken.None);
-        Assert(countries.Count == 2 && countries.Single(country => country.Code == "US").Count == 1,
+        Assert(countries.Count == 2 && countries.Single(country => country.Code == "US").Count == 4,
             "Country dictionary must include only live proxies.");
         var selected = await pool.GetRandomAliveProxyAsync("http", "US", CancellationToken.None);
-        Assert(selected?.Id == us.Id, "Country-filtered selection must return the requested live country.");
+        Assert(selected?.GeoLocation?.CountryCode == "US", "Country-filtered selection must return the requested live country.");
+        var selectedBatch = await pool.GetRandomAliveProxiesAsync("http", "US", 10, CancellationToken.None);
+        Assert(selectedBatch.Count == 4 && selectedBatch.All(proxy => proxy.GeoLocation?.CountryCode == "US") &&
+               selectedBatch.Select(proxy => proxy.Id).Distinct().Count() == 4,
+            "Batch selection must return each matching live proxy at most once.");
         var exported = await pool.ExportAliveAsync(null, "CN", CancellationToken.None);
         Assert(exported == "2.2.2.2:8080", "Country-filtered export must contain only matching live proxies.");
         var page = await pool.GetProxiesAsync(new ProxyQuery { Country = "CN", Page = 1, PageSize = 30 },

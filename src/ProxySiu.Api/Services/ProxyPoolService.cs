@@ -11,6 +11,7 @@ namespace ProxySiu.Api.Services;
 
 public sealed class ProxyPoolService
 {
+    private const int RandomProxyCandidateCount = 30;
     private readonly JsonProxyStore _store;
     private readonly ProxyListParser _parser;
     private readonly ProxyChecker _checker;
@@ -244,8 +245,12 @@ public sealed class ProxyPoolService
                 .ToList();
         }, cancellationToken);
 
-    public Task<ProxyDto?> GetRandomAliveProxyAsync(string? protocolValue, string? countryCode,
+    public async Task<ProxyDto?> GetRandomAliveProxyAsync(string? protocolValue, string? countryCode,
         CancellationToken cancellationToken) =>
+        (await GetRandomAliveProxiesAsync(protocolValue, countryCode, 1, cancellationToken)).FirstOrDefault();
+
+    public Task<IReadOnlyList<ProxyDto>> GetRandomAliveProxiesAsync(string? protocolValue, string? countryCode,
+        int count, CancellationToken cancellationToken) =>
         _store.ReadAsync(state =>
         {
             IEnumerable<ProxyRecord> records = state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Alive);
@@ -259,14 +264,23 @@ public sealed class ProxyPoolService
                     StringComparison.OrdinalIgnoreCase));
             }
 
-            var candidates = records.OrderBy(proxy => proxy.LatencyMs ?? long.MaxValue).Take(30).ToList();
-            if (candidates.Count == 0)
+            var candidates = records.OrderBy(proxy => proxy.LatencyMs ?? long.MaxValue)
+                .Take(Math.Max(RandomProxyCandidateCount, count)).ToList();
+            if (candidates.Count < 2)
             {
-                return null;
+                return (IReadOnlyList<ProxyDto>)candidates
+                    .Select(proxy => ToDto(proxy, state.Sources.ToDictionary(source => source.Id, source => source.Name)))
+                    .ToList();
             }
 
-            var selected = candidates[Random.Shared.Next(candidates.Count)];
-            return ToDto(selected, state.Sources.ToDictionary(source => source.Id, source => source.Name));
+            for (var index = candidates.Count - 1; index > 0; index--)
+            {
+                var selectedIndex = Random.Shared.Next(index + 1);
+                (candidates[index], candidates[selectedIndex]) = (candidates[selectedIndex], candidates[index]);
+            }
+
+            var sourceNames = state.Sources.ToDictionary(source => source.Id, source => source.Name);
+            return (IReadOnlyList<ProxyDto>)candidates.Take(count).Select(proxy => ToDto(proxy, sourceNames)).ToList();
         }, cancellationToken);
 
     public Task<string> ExportAliveAsync(string? protocolValue, string? countryCode,

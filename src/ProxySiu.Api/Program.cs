@@ -241,17 +241,27 @@ api.MapGet("/proxy/countries", async (string? protocol, ProxyPoolService pool,
     }
 });
 
-api.MapGet("/proxy/random", async (string? protocol, string? country, ProxyPoolService pool,
+api.MapGet("/proxy/random", async (string? protocol, string? country, int? count, ProxyPoolService pool,
     CancellationToken cancellationToken) =>
 {
     try
     {
         ValidateProtocol(protocol);
         ValidateCountry(country);
-        var proxy = await pool.GetRandomAliveProxyAsync(protocol, country, cancellationToken);
-        return proxy is null
+        var requestedCount = count ?? 1;
+        ValidateRandomProxyCount(requestedCount);
+        if (requestedCount == 1)
+        {
+            var proxy = await pool.GetRandomAliveProxyAsync(protocol, country, cancellationToken);
+            return proxy is null
+                ? Results.NotFound(new { message = "No matching live proxy is currently available." })
+                : Results.Ok(proxy);
+        }
+
+        var proxies = await pool.GetRandomAliveProxiesAsync(protocol, country, requestedCount, cancellationToken);
+        return proxies.Count == 0
             ? Results.NotFound(new { message = "No matching live proxy is currently available." })
-            : Results.Ok(proxy);
+            : Results.Ok(proxies);
     }
     catch (ArgumentException exception)
     {
@@ -390,6 +400,14 @@ static void ValidateProxyQuery(ProxyQuery query)
 }
 
 static void ValidateProtocol(string? value) => ValidateEnum<ProxyProtocol>(value, "protocol");
+
+static void ValidateRandomProxyCount(int count)
+{
+    if (count is < 1 or > 100)
+    {
+        throw new ArgumentException("count must be between 1 and 100.");
+    }
+}
 
 static void ValidateCountry(string? value)
 {

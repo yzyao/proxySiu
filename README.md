@@ -193,8 +193,8 @@ curl -H "X-API-Key: $PROXYSIU_ACCESS_TOKEN" \
 | 方法 | 路径 | 权限 | 用途 |
 | --- | --- | --- | --- |
 | GET | `/api/proxy/countries?protocol=http` | Token 或浏览器会话 | 当前可用代理的国家字典与数量 |
-| GET | `/api/proxy/random?protocol=http&country=US&count=20` | Token 或浏览器会话 | `count` 省略或为 `1` 时返回一个代理；`2`–`100` 时返回最多该数量的匹配代理数组 |
-| GET | `/api/proxy/plain?protocol=socks5&country=CN` | Token 或浏览器会话 | 文本导出匹配条件的可用代理 |
+| GET | `/api/proxy/random?protocol=http&country=US&count=20` | Token 或浏览器会话 | `count` 省略或为 `1` 时返回一个代理；`2`–`100` 时返回最多该数量的匹配代理数组。`country` 未传时默认排除美国（`US`）代理 |
+| GET | `/api/proxy/plain?protocol=socks5&country=CN` | Token 或浏览器会话 | 文本导出匹配条件的可用代理；`country` 未传时默认排除美国（`US`）代理 |
 | GET | `/api/dashboard` | 浏览器会话 | 池、调度与当前任务状态 |
 | GET / POST / PUT / DELETE | `/api/proxies` | 浏览器会话 | 查询和管理候选代理 |
 | GET / POST / PUT / DELETE | `/api/sources` | 浏览器会话 | 管理采集源 |

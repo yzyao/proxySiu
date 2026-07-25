@@ -446,12 +446,17 @@ static async Task CountrySelectionAsync()
             "Country dictionary must include only live proxies.");
         var selected = await pool.GetRandomAliveProxyAsync("http", "US", CancellationToken.None);
         Assert(selected?.GeoLocation?.CountryCode == "US", "Country-filtered selection must return the requested live country.");
+        var defaultSelected = await pool.GetRandomAliveProxyAsync("http", null, CancellationToken.None);
+        Assert(defaultSelected?.GeoLocation?.CountryCode != "US",
+            "Default proxy selection must exclude US proxies.");
         var selectedBatch = await pool.GetRandomAliveProxiesAsync("http", "US", 10, CancellationToken.None);
         Assert(selectedBatch.Count == 4 && selectedBatch.All(proxy => proxy.GeoLocation?.CountryCode == "US") &&
                selectedBatch.Select(proxy => proxy.Id).Distinct().Count() == 4,
             "Batch selection must return each matching live proxy at most once.");
         var exported = await pool.ExportAliveAsync(null, "CN", CancellationToken.None);
         Assert(exported == "2.2.2.2:8080", "Country-filtered export must contain only matching live proxies.");
+        var defaultExport = await pool.ExportAliveAsync(null, null, CancellationToken.None);
+        Assert(defaultExport == "2.2.2.2:8080", "Default proxy export must exclude US proxies.");
         var page = await pool.GetProxiesAsync(new ProxyQuery { Country = "CN", Page = 1, PageSize = 30 },
             CancellationToken.None);
         Assert(page.Total == 1 && page.Items.Single().Id == cn.Id,

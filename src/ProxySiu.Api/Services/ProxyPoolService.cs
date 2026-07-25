@@ -263,6 +263,11 @@ public sealed class ProxyPoolService
                 records = records.Where(proxy => string.Equals(proxy.GeoLocation?.CountryCode, countryCode,
                     StringComparison.OrdinalIgnoreCase));
             }
+            else
+            {
+                records = records.Where(proxy => !string.Equals(proxy.GeoLocation?.CountryCode, "US",
+                    StringComparison.OrdinalIgnoreCase));
+            }
 
             var candidates = records.OrderBy(proxy => proxy.LatencyMs ?? long.MaxValue)
                 .Take(Math.Max(RandomProxyCandidateCount, count)).ToList();
@@ -295,6 +300,11 @@ public sealed class ProxyPoolService
             if (!string.IsNullOrWhiteSpace(countryCode))
             {
                 records = records.Where(proxy => string.Equals(proxy.GeoLocation?.CountryCode, countryCode,
+                    StringComparison.OrdinalIgnoreCase));
+            }
+            else
+            {
+                records = records.Where(proxy => !string.Equals(proxy.GeoLocation?.CountryCode, "US",
                     StringComparison.OrdinalIgnoreCase));
             }
 

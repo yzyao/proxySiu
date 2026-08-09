@@ -24,6 +24,7 @@ var tests = new (string Name, Func<Task> Run)[]
     ("new candidates enter a full pool without displacing recovery dead records", PartitionedAdmissionAsync),
     ("alive country dictionary and country proxy selection stay scoped to live proxies", CountrySelectionAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
+    ("existing pools merge new built-in source seeds without overwriting edits", BuiltInSourceSeedMergeAsync),
     ("json store preserves a recoverable backup", JsonStoreBackupAsync)
 };
 
@@ -507,6 +508,92 @@ static async Task JsonStoreBackupAsync()
         await recoveredAgainStore.InitializeAsync();
         var recoveredAgainCount = await recoveredAgainStore.ReadAsync(state => state.Proxies.Count);
         Assert(recoveredAgainCount == 1, "Recovery must preserve a valid backup for a later failure.");
+    }
+    finally
+    {
+        if (Directory.Exists(directory))
+        {
+            Directory.Delete(directory, true);
+        }
+    }
+}
+
+static async Task BuiltInSourceSeedMergeAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var environment = new TestHostEnvironment(directory);
+        var firstOptions = Options.Create(new ProxyPoolOptions
+        {
+            DataFile = file,
+            Sources =
+            [
+                new ProxySourceSeed
+                {
+                    Name = "Seed A",
+                    Url = "https://example.com/a.txt",
+                    Protocol = ProxyProtocol.Http
+                }
+            ]
+        });
+        var firstStore = new JsonProxyStore(firstOptions, environment, NullLogger<JsonProxyStore>.Instance);
+        await firstStore.InitializeAsync();
+        var seedId = await firstStore.ReadAsync(state => state.Sources.Single().Id);
+
+        await firstStore.WriteAsync(state =>
+        {
+            var existing = state.Sources.Single(source => source.Id == seedId);
+            existing.Name = "Locally renamed seed";
+            existing.Enabled = false;
+            state.Sources.Add(new ProxySource
+            {
+                Name = "Manual source",
+                Url = "https://example.com/manual.txt",
+                Protocol = ProxyProtocol.Socks5
+            });
+            return 0;
+        });
+
+        var secondOptions = Options.Create(new ProxyPoolOptions
+        {
+            DataFile = file,
+            Sources =
+            [
+                new ProxySourceSeed
+                {
+                    Name = "Seed A",
+                    Url = "https://example.com/a.txt",
+                    Protocol = ProxyProtocol.Http
+                },
+                new ProxySourceSeed
+                {
+                    Name = "Seed B",
+                    Url = "https://example.com/b.txt",
+                    Protocol = ProxyProtocol.Socks4
+                }
+            ]
+        });
+        var secondStore = new JsonProxyStore(secondOptions, environment, NullLogger<JsonProxyStore>.Instance);
+        await secondStore.InitializeAsync();
+        var sources = await secondStore.ReadAsync(state => state.Sources.ToList());
+
+        Assert(sources.Count == 3, "Existing pools must receive each missing seed exactly once.");
+        var preserved = sources.Single(source => source.Id == seedId);
+        Assert(preserved.Name == "Locally renamed seed" && !preserved.Enabled,
+            "Seed synchronization must preserve local source edits.");
+        var added = sources.Single(source => source.Url == "https://example.com/b.txt");
+        Assert(added.IsBuiltIn && added.Protocol == ProxyProtocol.Socks4,
+            "A missing configured seed must be added as a built-in source.");
+        Assert(sources.Any(source => source.Url == "https://example.com/manual.txt" && !source.IsBuiltIn),
+            "Manual sources must survive built-in seed synchronization.");
+
+        var restartedStore = new JsonProxyStore(secondOptions, environment, NullLogger<JsonProxyStore>.Instance);
+        await restartedStore.InitializeAsync();
+        var restartedCount = await restartedStore.ReadAsync(state => state.Sources.Count);
+        Assert(restartedCount == 3, "Seed synchronization must be idempotent across restarts.");
     }
     finally
     {

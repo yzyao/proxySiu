@@ -47,7 +47,6 @@ public sealed class JsonProxyStore
             }
 
             Directory.CreateDirectory(Path.GetDirectoryName(_filePath)!);
-            var loadedExistingState = false;
             var recoveredFromBackup = false;
             var primaryWasCorrupt = false;
             if (File.Exists(_filePath))
@@ -55,7 +54,6 @@ public sealed class JsonProxyStore
                 try
                 {
                     _state = await LoadStateAsync(_filePath, cancellationToken);
-                    loadedExistingState = true;
                 }
                 catch (Exception exception) when (exception is JsonException or IOException)
                 {
@@ -69,7 +67,6 @@ public sealed class JsonProxyStore
                         try
                         {
                             _state = await LoadStateAsync(_backupPath, cancellationToken);
-                            loadedExistingState = true;
                             recoveredFromBackup = true;
                             _logger.LogWarning("Recovered proxy pool data from {BackupPath}", _backupPath);
                         }
@@ -86,7 +83,7 @@ public sealed class JsonProxyStore
                 }
             }
 
-            var changed = !loadedExistingState && MergeSeedSources();
+            var changed = MergeSeedSources();
             _initialized = true;
             if (!File.Exists(_filePath) || changed || recoveredFromBackup)
             {

@@ -11,6 +11,22 @@ ProxySiu 是一个自托管的公开代理池维护工具：采集 HTTP、SOCKS4
 - 数据：运行数据存储在 `data/proxy-pool.json`，写入时保留 `.bak` 恢复副本；浏览器会话加密密钥也存于 `data/data-protection-keys`。Compose 使用命名卷 `proxy-data` 持久化二者。
 - 归属地：成功检测时通过 `api.ip.sb` 获取出口 IP 与国家/地区/城市；仅可用代理在管理台展示归属地，并可按国家筛选或提取。
 
+### 默认采集源
+
+默认配置包含 Proxifly、TheSpeedX、Monosans、OpenProxyList 和 Jetkai 五组公开文本源，覆盖 HTTP、SOCKS4、SOCKS5，共 15 个列表。新增源包括：
+
+- Monosans HTTP：`https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt`
+- Monosans SOCKS4：`https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt`
+- Monosans SOCKS5：`https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt`
+- OpenProxyList HTTP：`https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt`
+- OpenProxyList SOCKS4：`https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt`
+- OpenProxyList SOCKS5：`https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt`
+- Jetkai HTTP：`https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt`
+- Jetkai SOCKS4：`https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt`
+- Jetkai SOCKS5：`https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt`
+
+API 启动时会按 URL 幂等合并缺失的内置源，因此已有 `data/proxy-pool.json` 的部署重启后也会获得新增源；已有源的名称、启停状态和扫描记录不会被覆盖。公开列表可能重复、失效或包含低质量代理，最终结果仍以 ProxySiu 的公网地址过滤和可用性检测为准。
+
 ## 代理维护流程
 
 ```mermaid

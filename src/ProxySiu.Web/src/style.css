@@ -82,6 +82,9 @@ button, input { font: inherit; }
 .protocol-track { height: 8px; border-radius: 8px; background: #edf1f6; overflow: hidden; }.protocol-track i { display: block; min-width: 2px; height: 100%; border-radius: inherit; background: linear-gradient(90deg, #3976f6, #66a0ff); }
 .protocol-row strong { color: #67758c; font-size: 11px; text-align: right; }
 .api-panel, .task-panel { min-height: 290px; }
+.quick-filter { padding: 14px 22px 0; display: flex; align-items: center; gap: 10px; }
+.quick-filter > span { color: #69768a; font-size: 11px; font-weight: 700; white-space: nowrap; }
+.quick-filter .el-select { flex: 1; }
 .api-actions { padding: 17px 22px 10px; display: flex; flex-direction: column; gap: 8px; }
 .api-actions button { height: 45px; padding: 0 13px; border: 1px solid #edf0f5; border-radius: 9px; background: #fafbfc; display: grid; grid-template-columns: 60px 1fr 18px; align-items: center; cursor: pointer; text-align: left; transition: .2s; }
 .api-actions button:hover { border-color: #bfd1fa; background: #f5f8ff; }.api-actions span { color: #3976f6; font-size: 10px; font-weight: 800; }.api-actions code { color: #69768a; font-size: 10px; }.api-actions svg { width: 15px; color: #99a4b4; }
@@ -176,6 +179,7 @@ button, input { font: inherit; }
   .protocol-list { min-height: 0; padding: 18px 16px; gap: 18px; }
   .protocol-row { grid-template-columns: 96px 1fr 32px; gap: 9px; }
   .api-actions { padding: 14px 16px 8px; }
+  .quick-filter { padding: 12px 16px 0; }
   .api-actions button { grid-template-columns: 54px minmax(0, 1fr) 18px; }
   .api-actions code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .safety-note { margin: 5px 16px 16px; }

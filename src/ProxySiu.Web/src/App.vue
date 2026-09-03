@@ -47,6 +47,8 @@ const proxyRows = ref([])
 const proxyTotal = ref(0)
 const sources = ref([])
 const countries = ref([])
+const quickCountries = ref([])
+const quickCountry = ref('')
 const checkingIds = reactive(new Set())
 const query = reactive({ q: '', status: '', protocol: '', country: '', sort: '', desc: false, page: 1, pageSize: 30 })
 
@@ -121,7 +123,7 @@ onMounted(async () => {
 onBeforeUnmount(() => window.clearTimeout(pollTimer))
 
 async function initializeAuthenticatedApp() {
-  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources(), loadCountries()])
+  await Promise.allSettled([loadDashboard(), loadProxies(), loadSources(), loadCountries(), loadQuickCountries()])
   scheduleDashboardPoll()
 }
 
@@ -193,8 +195,16 @@ async function loadCountries() {
   }
 }
 
+async function loadQuickCountries() {
+  try {
+    quickCountries.value = await api.countries()
+  } catch (error) {
+    ElMessage.error(error.message)
+  }
+}
+
 async function reloadAll() {
-  await Promise.all([loadDashboard(), loadProxies(), loadSources(), loadCountries()])
+  await Promise.all([loadDashboard(), loadProxies(), loadSources(), loadCountries(), loadQuickCountries()])
 }
 
 function changeView(view) {
@@ -376,14 +386,22 @@ async function removeSource(row) {
   }
 }
 
-async function copyRandom(protocol = '') {
+async function copyRandom(protocol = '', country = quickCountry.value) {
   try {
-    const result = await api.randomProxy(protocol)
+    const result = await api.randomProxy(protocol, country)
     await copyToClipboard(result.url)
     ElMessage.success(`已复制 ${result.url}`)
   } catch (error) {
     ElMessage.error(error.message)
   }
+}
+
+function randomPath(protocol = '') {
+  const params = new URLSearchParams()
+  if (protocol) params.set('protocol', protocol)
+  if (quickCountry.value) params.set('country', quickCountry.value)
+  const query = params.toString()
+  return `GET /api/proxy/random${query ? `?${query}` : ''}`
 }
 
 async function copyProxy(row) {
@@ -582,10 +600,17 @@ function successRate(row) {
 
           <article class="panel api-panel">
             <div class="panel-heading"><div><h2>快速取用</h2><p>从低延迟可用代理中随机选择</p></div><Download /></div>
+            <div class="quick-filter">
+              <span>国家</span>
+              <el-select v-model="quickCountry" clearable filterable placeholder="全部可用国家">
+                <el-option label="全部可用国家" value="" />
+                <el-option v-for="country in quickCountries" :key="country.code" :label="`${country.name} (${country.code}) · ${country.count}`" :value="country.code" />
+              </el-select>
+            </div>
             <div class="api-actions">
-              <button @click="copyRandom('http')"><span>HTTP</span><code>GET /api/proxy/random?protocol=http</code><CopyDocument /></button>
-              <button @click="copyRandom('socks5')"><span>SOCKS5</span><code>GET /api/proxy/random?protocol=socks5</code><CopyDocument /></button>
-              <button @click="copyRandom()"><span>ANY</span><code>GET /api/proxy/random</code><CopyDocument /></button>
+              <button @click="copyRandom('http')"><span>HTTP</span><code>{{ randomPath('http') }}</code><CopyDocument /></button>
+              <button @click="copyRandom('socks5')"><span>SOCKS5</span><code>{{ randomPath('socks5') }}</code><CopyDocument /></button>
+              <button @click="copyRandom()"><span>ANY</span><code>{{ randomPath() }}</code><CopyDocument /></button>
             </div>
             <p class="safety-note"><WarningFilled /> 公共代理可能记录或篡改流量，请勿传输账号、Cookie、密钥等敏感信息。</p>
           </article>

@@ -49,14 +49,16 @@ public sealed class ProxyChecker(ProxyPoolProfileManager profileManager, ILogger
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead,
                 timeout.Token);
             response.EnsureSuccessStatusCode();
-            var body = await response.Content.ReadAsStringAsync(timeout.Token);
+            var body = await LimitedHttpContent.ReadStringAsync(response.Content,
+                LimitedHttpContent.MaximumLookupBytes, timeout.Token);
             stopwatch.Stop();
 
             var checkResponse = ParseCheckResponse(body);
             return new ProxyCheckResult(proxy.Id, true, stopwatch.ElapsedMilliseconds,
                 checkResponse.ExitIp, null, checkedAt, checkResponse.GeoLocation);
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or UriFormatException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or
+                                         UriFormatException or InvalidOperationException)
         {
             logger.LogDebug(exception, "代理 {Host}:{Port} 检测失败", proxy.Host, proxy.Port);
             var message = exception is TaskCanceledException ? "检测超时" : exception.Message;

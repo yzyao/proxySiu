@@ -1,6 +1,5 @@
 using System.Collections.Concurrent;
 using System.Net;
-using System.Text;
 using Microsoft.Extensions.Options;
 using ProxySiu.Api.Contracts;
 using ProxySiu.Api.Models;
@@ -113,6 +112,7 @@ public sealed class ProxyPoolService
                     StringComparison.OrdinalIgnoreCase));
             }
 
+            var total = records.Count();
             records = (query.Sort?.ToLowerInvariant(), query.Desc ?? true) switch
             {
                 ("address", false) => records.OrderBy(proxy => proxy.Host, StringComparer.OrdinalIgnoreCase)
@@ -144,13 +144,12 @@ public sealed class ProxyPoolService
                 _ => records.OrderBy(proxy => proxy.Status).ThenBy(proxy => proxy.LatencyMs ?? long.MaxValue)
             };
 
-            var list = records.ToList();
             var pageSize = Math.Clamp(query.PageSize ?? 30, 10, 200);
             var page = Math.Max(query.Page ?? 1, 1);
             var sourceNames = state.Sources.ToDictionary(source => source.Id, source => source.Name);
-            var items = list.Skip((page - 1) * pageSize).Take(pageSize)
+            var items = records.Skip((page - 1) * pageSize).Take(pageSize)
                 .Select(proxy => ToDto(proxy, sourceNames)).ToList();
-            return new PagedResult<ProxyDto>(items, list.Count, page, pageSize);
+            return new PagedResult<ProxyDto>(items, total, page, pageSize);
         }, cancellationToken);
 
     public Task<IReadOnlyList<SourceDto>> GetSourcesAsync(CancellationToken cancellationToken) =>
@@ -200,7 +199,11 @@ public sealed class ProxyPoolService
     }
 
     public Task<bool> DeleteProxyAsync(Guid id, CancellationToken cancellationToken) =>
-        _store.WriteAsync(state => state.Proxies.RemoveAll(proxy => proxy.Id == id) > 0, cancellationToken);
+        _store.WriteIfChangedAsync(state =>
+        {
+            var removed = state.Proxies.RemoveAll(proxy => proxy.Id == id) > 0;
+            return (removed, removed);
+        }, cancellationToken);
 
     public async Task<ProxyDto?> CheckProxyAsync(Guid id, CancellationToken cancellationToken)
     {
@@ -361,7 +364,7 @@ public sealed class ProxyPoolService
     }
 
     public Task<bool> DeleteSourceAsync(Guid id, CancellationToken cancellationToken) =>
-        _store.WriteAsync(state =>
+        _store.WriteIfChangedAsync(state =>
         {
             var removed = state.Sources.RemoveAll(source => source.Id == id) > 0;
             if (removed)
@@ -372,7 +375,7 @@ public sealed class ProxyPoolService
                 }
             }
 
-            return removed;
+            return (removed, removed);
         }, cancellationToken);
 
     public async Task<PoolOperationResult> ScanAsync(CancellationToken cancellationToken)
@@ -615,15 +618,21 @@ public sealed class ProxyPoolService
         _store.ReadAsync(state => state.Proxies.Any(proxy => proxy.Status == ProxyStatus.Pending), cancellationToken);
 
     public Task<int> TrimExcessPendingAsync(CancellationToken cancellationToken) =>
-        _store.WriteAsync(state =>
+        _store.WriteIfChangedAsync(state =>
         {
+            var maximum = Math.Clamp(Options.MaxPendingProxies, 1, Options.MaxPoolSize);
+            if (state.Proxies.Count(proxy => proxy.Status == ProxyStatus.Pending && !proxy.IsPinned) <= maximum)
+            {
+                return (0, false);
+            }
+
             var now = DateTimeOffset.UtcNow;
             var excess = state.Proxies.Where(proxy => proxy.Status == ProxyStatus.Pending && !proxy.IsPinned)
                 .OrderByDescending(proxy => proxy.FirstSeenAt)
-                .Skip(Math.Clamp(Options.MaxPendingProxies, 1, Options.MaxPoolSize))
+                .Skip(maximum)
                 .ToList();
             RemoveWithQuarantine(state, excess, now, Options);
-            return excess.Count;
+            return (excess.Count, excess.Count > 0);
         }, cancellationToken);
 
     public async Task<PoolOperationResult> PruneAsync(CancellationToken cancellationToken)
@@ -638,9 +647,9 @@ public sealed class ProxyPoolService
             var now = DateTimeOffset.UtcNow;
             var deadCutoff = now.AddHours(-Math.Clamp(Options.RemoveDeadAfterHours, 1, 24 * 365));
             var unseenCutoff = now.AddHours(-Math.Clamp(Options.RemoveUnseenAfterHours, 1, 24 * 365));
-            var removed = await _store.WriteAsync(state =>
+            var removed = await _store.WriteIfChangedAsync(state =>
             {
-                state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
+                var expired = state.Quarantines.RemoveAll(quarantine => quarantine.ExpiresAt <= now);
                 var toRemove = state.Proxies.Where(proxy =>
                     !proxy.IsPinned &&
                     ((proxy.Status == ProxyStatus.Dead &&
@@ -655,7 +664,7 @@ public sealed class ProxyPoolService
                     Options.MaxConsecutiveFailures);
                 toRemove.AddRange(capacityEvictions);
                 RemoveWithQuarantine(state, toRemove, now, Options);
-                return toRemove.Count;
+                return (toRemove.Count, toRemove.Count > 0 || expired > 0);
             }, cancellationToken);
             _lastPruneAt = now;
             return SetMessage(new PoolOperationResult(false, $"清理完成：移除 {removed} 个长期失效代理。",
@@ -674,7 +683,7 @@ public sealed class ProxyPoolService
             var currentUri = new Uri(source.Url, UriKind.Absolute);
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(Math.Clamp(Options.DownloadTimeoutSeconds, 3, 120)));
-            var client = _httpClientFactory.CreateClient("proxy-sources");
+            using var client = _httpClientFactory.CreateClient("proxy-sources");
 
             for (var redirect = 0; redirect <= 5; redirect++)
             {
@@ -714,35 +723,9 @@ public sealed class ProxyPoolService
         }
     }
 
-    private async Task<string> ReadLimitedStringAsync(HttpContent content, CancellationToken cancellationToken)
-    {
-        if (content.Headers.ContentLength > Options.MaxSourceBytes)
-        {
-            throw new InvalidOperationException("采集源内容超过大小限制。" );
-        }
-
-        await using var source = await content.ReadAsStreamAsync(cancellationToken);
-        using var target = new MemoryStream();
-        var buffer = new byte[16 * 1024];
-        var maximum = Math.Clamp(Options.MaxSourceBytes, 1024, 20_000_000);
-        while (true)
-        {
-            var read = await source.ReadAsync(buffer, cancellationToken);
-            if (read == 0)
-            {
-                break;
-            }
-
-            if (target.Length + read > maximum)
-            {
-                throw new InvalidOperationException("采集源内容超过大小限制。" );
-            }
-
-            await target.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
-        }
-
-        return Encoding.UTF8.GetString(target.ToArray());
-    }
+    private Task<string> ReadLimitedStringAsync(HttpContent content, CancellationToken cancellationToken) =>
+        LimitedHttpContent.ReadStringAsync(content, Math.Clamp(Options.MaxSourceBytes, 1024, 20_000_000),
+            cancellationToken);
 
     private static List<ProxyRecord> SelectCapacityEvictions(IEnumerable<ProxyRecord> records, int maxPoolSize,
         int maxConsecutiveFailures)

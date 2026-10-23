@@ -16,6 +16,7 @@ public sealed class JsonProxyStore
     private readonly string _backupPath;
     private ProxyPoolState _state = new();
     private bool _initialized;
+    private bool _savePending;
 
     public JsonProxyStore(
         IOptions<ProxyPoolOptions> options,
@@ -31,7 +32,7 @@ public sealed class JsonProxyStore
         _jsonOptions = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = true,
+            WriteIndented = false,
             Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
         };
     }
@@ -115,16 +116,29 @@ public sealed class JsonProxyStore
         }
     }
 
-    public async Task<T> WriteAsync<T>(Func<ProxyPoolState, T> writer,
+    public Task<T> WriteAsync<T>(Func<ProxyPoolState, T> writer,
+        CancellationToken cancellationToken = default) =>
+        WriteIfChangedAsync(state => (writer(state), true), cancellationToken);
+
+    // The callback must report every mutation while holding the same lock used for reads and saves.
+    public async Task<T> WriteIfChangedAsync<T>(Func<ProxyPoolState, (T Result, bool Changed)> writer,
         CancellationToken cancellationToken = default)
     {
         await InitializeAsync(cancellationToken);
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            var result = writer(_state);
-            _state.UpdatedAt = DateTimeOffset.UtcNow;
-            await SaveUnsafeAsync(cancellationToken);
+            var (result, changed) = writer(_state);
+            if (changed)
+            {
+                _state.UpdatedAt = DateTimeOffset.UtcNow;
+                _savePending = true;
+            }
+
+            if (_savePending)
+            {
+                await SaveUnsafeAsync(cancellationToken);
+            }
             return result;
         }
         finally
@@ -160,11 +174,12 @@ public sealed class JsonProxyStore
 
     private async Task SaveUnsafeAsync(CancellationToken cancellationToken)
     {
+        _savePending = true;
         var temporaryPath = $"{_filePath}.tmp";
         try
         {
             await using (var stream = new FileStream(temporaryPath, FileMode.Create, FileAccess.Write,
-                             FileShare.None, 64 * 1024, FileOptions.Asynchronous | FileOptions.WriteThrough))
+                             FileShare.None, 64 * 1024, FileOptions.Asynchronous))
             {
                 await JsonSerializer.SerializeAsync(stream, _state, _jsonOptions, cancellationToken);
                 await stream.FlushAsync(cancellationToken);
@@ -180,6 +195,8 @@ public sealed class JsonProxyStore
                 File.Move(temporaryPath, _filePath);
                 File.Copy(_filePath, _backupPath, true);
             }
+
+            _savePending = false;
         }
         finally
         {

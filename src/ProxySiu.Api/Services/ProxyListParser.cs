@@ -13,13 +13,9 @@ public sealed partial class ProxyListParser(IOptions<ProxyPoolOptions> options)
     public IReadOnlyList<ProxyCandidate> Parse(string content, ProxyProtocol fallbackProtocol, int limit)
     {
         var proxies = new Dictionary<string, ProxyCandidate>(StringComparer.OrdinalIgnoreCase);
-        foreach (var line in content.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        using var reader = new StringReader(content);
+        while (proxies.Count < limit && reader.ReadLine() is { } line)
         {
-            if (proxies.Count >= limit)
-            {
-                break;
-            }
-
             var trimmed = line.Trim();
             if (trimmed.Length == 0 || trimmed.StartsWith('#'))
             {

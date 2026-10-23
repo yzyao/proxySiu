@@ -2,23 +2,27 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Text.Json;
 using System.Threading.Channels;
+using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 using ProxySiu.Api.Models;
 using ProxySiu.Api.Options;
 
 namespace ProxySiu.Api.Services;
 
-public sealed class GeoIpService
+public sealed class GeoIpService : IDisposable
 {
+    private const int LookupCapacity = 10_000;
     private readonly GeoIpOptions _options;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<GeoIpService> _logger;
-    private readonly Channel<string> _remoteQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(10_000)
+    private readonly Channel<string> _remoteQueue = Channel.CreateBounded<string>(new BoundedChannelOptions(LookupCapacity)
     {
-        FullMode = BoundedChannelFullMode.DropWrite,
+        // TryWrite must return false when full so the pending deduplication entry can be removed.
+        FullMode = BoundedChannelFullMode.Wait,
         SingleReader = true
     });
     private readonly ConcurrentDictionary<string, byte> _remoteQueued = new(StringComparer.OrdinalIgnoreCase);
+    private readonly MemoryCache _completedLookups = new(new MemoryCacheOptions { SizeLimit = LookupCapacity });
 
     public GeoIpService(IOptions<GeoIpOptions> options, IHttpClientFactory httpClientFactory,
         ILogger<GeoIpService> logger)
@@ -39,7 +43,8 @@ public sealed class GeoIpService
         }
 
         var key = address.ToString();
-        if (_remoteQueued.TryAdd(key, 0) && !_remoteQueue.Writer.TryWrite(key))
+        if (!_completedLookups.TryGetValue(key, out _) &&
+            _remoteQueued.TryAdd(key, 0) && !_remoteQueue.Writer.TryWrite(key))
         {
             _remoteQueued.TryRemove(key, out _);
         }
@@ -48,15 +53,21 @@ public sealed class GeoIpService
     public IAsyncEnumerable<string> ReadRemoteQueueAsync(CancellationToken cancellationToken) =>
         _remoteQueue.Reader.ReadAllAsync(cancellationToken);
 
+    public bool TryReadRemoteLookup(out string ipAddress) => _remoteQueue.Reader.TryRead(out ipAddress!);
+
     public async Task<IpGeoLocation?> LookupIpSbAsync(string ipAddress, CancellationToken cancellationToken)
     {
         try
         {
             var endpoint = $"{_options.IpSbBaseUrl.TrimEnd('/')}/geoip/{Uri.EscapeDataString(ipAddress)}";
-            using var response = await _httpClientFactory.CreateClient("geoip-lookup").GetAsync(endpoint, cancellationToken);
+            using var client = _httpClientFactory.CreateClient("geoip-lookup");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+            using var response = await client.GetAsync(endpoint, HttpCompletionOption.ResponseHeadersRead, timeout.Token);
             response.EnsureSuccessStatusCode();
-            await using var content = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(content, cancellationToken: cancellationToken);
+            var content = await LimitedHttpContent.ReadStringAsync(response.Content,
+                LimitedHttpContent.MaximumLookupBytes, timeout.Token);
+            using var document = JsonDocument.Parse(content);
             var root = document.RootElement;
             var location = new IpGeoLocation(
                 ReadString(root, "country_code"),
@@ -66,7 +77,8 @@ public sealed class GeoIpService
                 ReadString(root, "city"));
             return location.HasValue ? location : null;
         }
-        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+        catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or
+                                         JsonException or InvalidOperationException)
         {
             _logger.LogDebug(exception, "api.ip.sb lookup failed for {IpAddress}.", ipAddress);
             return null;
@@ -75,11 +87,19 @@ public sealed class GeoIpService
 
     public void CompleteRemoteLookup(string ipAddress, bool keepCached)
     {
-        if (!keepCached)
+        if (keepCached)
         {
-            _remoteQueued.TryRemove(ipAddress, out _);
+            _completedLookups.Set(ipAddress, true, new MemoryCacheEntryOptions
+            {
+                Size = 1,
+                AbsoluteExpirationRelativeToNow = TimeSpan.FromHours(6)
+            });
         }
+
+        _remoteQueued.TryRemove(ipAddress, out _);
     }
+
+    public void Dispose() => _completedLookups.Dispose();
 
     private static string? ReadString(JsonElement element, string name) =>
         element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String

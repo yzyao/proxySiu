@@ -25,7 +25,13 @@ var tests = new (string Name, Func<Task> Run)[]
     ("alive country dictionary and country proxy selection stay scoped to live proxies", CountrySelectionAsync),
     ("maintenance queue accepts only one active operation", MaintenanceQueueAsync),
     ("existing pools merge new built-in source seeds without overwriting edits", BuiltInSourceSeedMergeAsync),
-    ("json store preserves a recoverable backup", JsonStoreBackupAsync)
+    ("json store preserves a recoverable backup", JsonStoreBackupAsync),
+    ("idle maintenance does not rewrite pool data or backups", IdleMaintenanceAsync),
+    ("streamed responses enforce the byte limit without buffering the full body", LimitedResponseAsync),
+    ("geoip queue retries overflow and bounds completed lookup retention", GeoIpRetentionAsync),
+    ("geoip enrichment batches saves and flushes on graceful shutdown", GeoIpBatchPersistenceAsync),
+    ("parser stops allocating after the requested candidate limit", ParserAllocationAsync),
+    ("cancelled saves are retried even when the next update changes nothing", CancelledSaveRetryAsync)
 };
 
 var failures = new List<string>();
@@ -74,6 +80,261 @@ static Task EndpointSafetyAsync()
     Assert(!EndpointSafety.IsPublicAddress(System.Net.IPAddress.Parse("2001:db8::1")), "Documentation IPv6 range must be private.");
     Assert(EndpointSafety.IsPublicAddress(System.Net.IPAddress.Parse("8.8.8.8")), "Public IPv4 must be allowed.");
     return Task.CompletedTask;
+}
+
+static Task ParserAllocationAsync()
+{
+    var parser = new ProxyListParser(Options.Create(new ProxyPoolOptions()));
+    parser.Parse("8.8.8.8:8080", ProxyProtocol.Http, 1);
+    var content = string.Join('\n', Enumerable.Repeat("8.8.8.8:8080", 100_000));
+    var before = GC.GetAllocatedBytesForCurrentThread();
+    var result = parser.Parse(content, ProxyProtocol.Http, 1);
+    var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+    Assert(result.Count == 1, "The requested candidate must still be parsed.");
+    Assert(allocated < 64 * 1024, "A one-candidate parse must not allocate strings for the rest of the source.");
+    Console.WriteLine($"INFO parser: {content.Length:N0} input characters, {allocated:N0} allocated bytes at limit=1");
+    return Task.CompletedTask;
+}
+
+static async Task IdleMaintenanceAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var options = Options.Create(new ProxyPoolOptions { DataFile = file });
+        var store = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        var profileManager = new ProxyPoolProfileManager(options.Value, new ProxyPoolOptionsValidator());
+        var pool = new ProxyPoolService(store, new ProxyListParser(options),
+            new ProxyChecker(profileManager, NullLogger<ProxyChecker>.Instance), new TestHttpClientFactory(),
+            profileManager, NullLogger<ProxyPoolService>.Instance);
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.AddRange(Enumerable.Range(0, 6000)
+                .Select(index => AliveProxy("8.8.8.8", 1000 + index, DateTimeOffset.UtcNow)));
+            return 0;
+        });
+        var primary = await File.ReadAllBytesAsync(file);
+        var backup = await File.ReadAllBytesAsync($"{file}.bak");
+        var updatedAt = await store.ReadAsync(state => state.UpdatedAt);
+        var marker = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        File.SetLastWriteTimeUtc(file, marker);
+        File.SetLastWriteTimeUtc($"{file}.bak", marker);
+        for (var iteration = 0; iteration < 100; iteration++)
+        {
+            Assert(await pool.TrimExcessPendingAsync(CancellationToken.None) == 0, "No pending proxies should be removed.");
+        }
+        await pool.PruneAsync(CancellationToken.None);
+        await pool.DeleteProxyAsync(Guid.NewGuid(), CancellationToken.None);
+        await pool.DeleteSourceAsync(Guid.NewGuid(), CancellationToken.None);
+        Assert(File.GetLastWriteTimeUtc(file) == marker && File.GetLastWriteTimeUtc($"{file}.bak") == marker,
+            "No-op maintenance must not rewrite either the primary file or the backup.");
+        var primaryAfter = await File.ReadAllBytesAsync(file);
+        var backupAfter = await File.ReadAllBytesAsync($"{file}.bak");
+        Assert(primary.SequenceEqual(primaryAfter) && backup.SequenceEqual(backupAfter),
+            "No-op maintenance must preserve bytes.");
+        Assert(updatedAt == await store.ReadAsync(state => state.UpdatedAt), "No-op maintenance must preserve UpdatedAt.");
+
+        using var document = System.Text.Json.JsonDocument.Parse(primary);
+        var indented = System.Text.Json.JsonSerializer.Serialize(document.RootElement,
+            new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        Console.WriteLine($"INFO 6000-proxy fixture: compact={primary.Length:N0} bytes, indented={System.Text.Encoding.UTF8.GetByteCount(indented):N0} bytes; 100 idle sweeps left both files untouched");
+
+        await store.WriteAsync(state =>
+        {
+            state.Quarantines.Add(new ProxyQuarantine { Key = "expired", ExpiresAt = DateTimeOffset.UtcNow.AddHours(-1) });
+            return 0;
+        });
+        await pool.PruneAsync(CancellationToken.None);
+        var reloaded = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        Assert(await reloaded.ReadAsync(state => state.Quarantines.Count) == 0,
+            "Removing only expired quarantine entries must still be persisted.");
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
+static async Task LimitedResponseAsync()
+{
+    using var encoded = new StringContent("测试", System.Text.Encoding.Unicode);
+    Assert(await LimitedHttpContent.ReadStringAsync(encoded, 1024, CancellationToken.None) == "测试",
+        "Declared response encoding must still be honored.");
+    using var bom = new ByteArrayContent([0xef, 0xbb, 0xbf, (byte)'{', (byte)'}']);
+    Assert(await LimitedHttpContent.ReadStringAsync(bom, 1024, CancellationToken.None) == "{}",
+        "A UTF-8 BOM must not interfere with JSON parsing.");
+    using var exact = new StringContent(new string('x', 1024));
+    Assert((await LimitedHttpContent.ReadStringAsync(exact, 1024, CancellationToken.None)).Length == 1024,
+        "A response exactly at the byte limit must be accepted.");
+    using var declared = new StringContent(new string('x', 1025));
+    try
+    {
+        await LimitedHttpContent.ReadStringAsync(declared, 1024, CancellationToken.None);
+        throw new Exception("A declared oversized response must be rejected.");
+    }
+    catch (InvalidOperationException) { }
+
+    using var stream = new NonSeekableReadStream(new byte[2_000_000]);
+    using var streamed = new StreamContent(stream);
+    Assert(streamed.Headers.ContentLength is null, "The streaming fixture must have no declared length.");
+    try
+    {
+        await LimitedHttpContent.ReadStringAsync(streamed, 1024, CancellationToken.None);
+        throw new Exception("A streamed oversized response must be rejected.");
+    }
+    catch (InvalidOperationException) { }
+    Assert(stream.BytesRead <= 1025, "Reject streamed overflow before reading or allocating the full response.");
+}
+
+static Task GeoIpRetentionAsync()
+{
+    using var service = new GeoIpService(Options.Create(new GeoIpOptions { UseIpSb = true }),
+        new TestHttpClientFactory(), NullLogger<GeoIpService>.Instance);
+    service.QueueRemoteLookup("8.8.8.8");
+    service.QueueRemoteLookup("8.8.8.8");
+    Assert(service.TryReadRemoteLookup(out var first) && first == "8.8.8.8" && !service.TryReadRemoteLookup(out _),
+        "Pending IPs must be deduplicated.");
+    service.CompleteRemoteLookup(first, keepCached: false);
+    service.QueueRemoteLookup(first);
+    Assert(service.TryReadRemoteLookup(out _), "Failed IP lookups must be retryable.");
+    service.CompleteRemoteLookup(first, keepCached: true);
+    service.QueueRemoteLookup(first);
+    Assert(!service.TryReadRemoteLookup(out _), "Completed lookups must be cached.");
+
+    for (var index = 0; index < 10_000; index++)
+    {
+        service.QueueRemoteLookup($"11.0.{index / 256}.{index % 256}");
+    }
+    service.QueueRemoteLookup("12.1.1.1");
+    Assert(service.TryReadRemoteLookup(out var drained), "The full queue must contain entries.");
+    service.CompleteRemoteLookup(drained, keepCached: true);
+    service.QueueRemoteLookup("12.1.1.1");
+    var foundOverflowRetry = false;
+    while (service.TryReadRemoteLookup(out var ip))
+    {
+        foundOverflowRetry |= ip == "12.1.1.1";
+        service.CompleteRemoteLookup(ip, keepCached: true);
+    }
+    Assert(foundOverflowRetry, "An IP rejected by a full queue must remain retryable once space is available.");
+    var pending = (System.Collections.Concurrent.ConcurrentDictionary<string, byte>)typeof(GeoIpService)
+        .GetField("_remoteQueued", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(service)!;
+    var completed = (Microsoft.Extensions.Caching.Memory.MemoryCache)typeof(GeoIpService)
+        .GetField("_completedLookups", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(service)!;
+    Assert(pending.IsEmpty, "Completed IPs must not accumulate in pending deduplication storage.");
+    Assert(completed.Count <= 10_000, "The completed lookup cache must remain bounded.");
+    return Task.CompletedTask;
+}
+
+static async Task CancelledSaveRetryAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var options = Options.Create(new ProxyPoolOptions { DataFile = Path.Combine(directory, "pool.json") });
+        var store = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        await store.InitializeAsync();
+        using var cancellation = new CancellationTokenSource();
+        try
+        {
+            await store.WriteIfChangedAsync(state =>
+            {
+                state.Proxies.Add(NewProxy("8.8.8.8", 8080));
+                cancellation.Cancel();
+                return (0, true);
+            }, cancellation.Token);
+            throw new Exception("The cancelled save must fail.");
+        }
+        catch (OperationCanceledException) { }
+        await store.WriteIfChangedAsync(_ => (0, false));
+        var reloaded = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        Assert(await reloaded.ReadAsync(state => state.Proxies.Count) == 1,
+            "A no-op retry must flush a previously interrupted mutation.");
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
+}
+
+static async Task GeoIpBatchPersistenceAsync()
+{
+    var directory = Path.Combine(Path.GetTempPath(), "ProxySiu-tests", Guid.NewGuid().ToString("N"));
+    Directory.CreateDirectory(directory);
+    try
+    {
+        var file = Path.Combine(directory, "pool.json");
+        var options = Options.Create(new ProxyPoolOptions { DataFile = file });
+        var store = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        string[] ips = ["8.8.8.8", "1.1.1.1", "9.9.9.9"];
+        await store.WriteAsync(state =>
+        {
+            state.Proxies.AddRange(ips.Select(ip =>
+            {
+                var proxy = AliveProxy(ip, 8080, DateTimeOffset.UtcNow);
+                proxy.ExitIp = ip;
+                return proxy;
+            }));
+            return 0;
+        });
+        using var service = new GeoIpService(Options.Create(new GeoIpOptions { IpSbLookupIntervalSeconds = 1 }),
+            new StaticHttpClientFactory("""{"country_code":"AU","country":"Australia"}"""),
+            NullLogger<GeoIpService>.Instance);
+        foreach (var ip in ips) service.QueueRemoteLookup(ip);
+        using var worker = new GeoIpEnrichmentWorker(service, store, NullLogger<GeoIpEnrichmentWorker>.Instance);
+        await worker.StartAsync(CancellationToken.None);
+        try
+        {
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            while (!await store.ReadAsync(state => state.Proxies.All(proxy => proxy.GeoLocation?.CountryCode == "AU"), timeout.Token))
+            {
+                await Task.Delay(25, timeout.Token);
+            }
+        }
+        finally
+        {
+            await worker.StopAsync(CancellationToken.None);
+        }
+        Assert(worker.ExecuteTask?.IsFaulted != true,
+            $"The batch worker must remain healthy after draining the queue: {worker.ExecuteTask?.Exception}");
+        using var backup = System.Text.Json.JsonDocument.Parse(await File.ReadAllBytesAsync($"{file}.bak"));
+        Assert(backup.RootElement.GetProperty("proxies").EnumerateArray()
+            .All(proxy => proxy.GetProperty("geoLocation").ValueKind == System.Text.Json.JsonValueKind.Null),
+            "All three locations must be saved together so the backup contains the state before enrichment.");
+
+        // Block the second lookup after the first has completed, then stop the worker mid-batch.
+        var shutdownFactory = new BlockingSecondLookupFactory();
+        using var shutdownService = new GeoIpService(Options.Create(new GeoIpOptions { IpSbLookupIntervalSeconds = 1 }),
+            shutdownFactory, NullLogger<GeoIpService>.Instance);
+        await store.WriteAsync(state =>
+        {
+            foreach (var proxy in state.Proxies) proxy.GeoLocation = null;
+            return 0;
+        });
+        foreach (var ip in ips.Take(2)) shutdownService.QueueRemoteLookup(ip);
+        using var shutdownWorker = new GeoIpEnrichmentWorker(shutdownService, store,
+            NullLogger<GeoIpEnrichmentWorker>.Instance);
+        await shutdownWorker.StartAsync(CancellationToken.None);
+        try
+        {
+            await shutdownFactory.SecondStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await shutdownWorker.StopAsync(CancellationToken.None);
+        }
+        Assert(shutdownWorker.ExecuteTask?.IsFaulted != true,
+            $"Graceful shutdown must not fault the worker: {shutdownWorker.ExecuteTask?.Exception}");
+        var reloaded = new JsonProxyStore(options, new TestHostEnvironment(directory), NullLogger<JsonProxyStore>.Instance);
+        Assert(await reloaded.ReadAsync(state => state.Proxies.Single(proxy => proxy.ExitIp == ips[0])
+                .GeoLocation?.CountryCode) == "AU", "Graceful shutdown must flush the first completed lookup.");
+    }
+    finally
+    {
+        Directory.Delete(directory, true);
+    }
 }
 
 static Task OptionsValidatorAsync()
@@ -668,4 +929,41 @@ sealed class StaticHttpHandler(string content) : HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
         Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new StringContent(content) });
+}
+
+sealed class NonSeekableReadStream(byte[] bytes) : MemoryStream(bytes)
+{
+    public override bool CanSeek => false;
+    public long BytesRead { get; private set; }
+
+    public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+    {
+        var read = await base.ReadAsync(buffer, cancellationToken);
+        BytesRead += read;
+        return read;
+    }
+}
+
+sealed class BlockingSecondLookupFactory : IHttpClientFactory
+{
+    public TaskCompletionSource SecondStarted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private int _calls;
+
+    public HttpClient CreateClient(string name) => new(new Handler(this));
+
+    private sealed class Handler(BlockingSecondLookupFactory owner) : HttpMessageHandler
+    {
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            if (Interlocked.Increment(ref owner._calls) == 2)
+            {
+                owner.SecondStarted.TrySetResult();
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("""{"country_code":"AU","country":"Australia"}""")
+            };
+        }
+    }
 }
